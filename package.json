@@ -1,0 +1,16 @@
+{
+  "name": "grubgrounds",
+  "version": "1.0.0",
+  "description": "Share and spread your love for food around the world.",
+  "private": true,
+  "scripts": {
+    "build": "esbuild entry.jsx --bundle --minify --loader:.jsx=jsx --format=iife --target=es2018 --outfile=bundle.js"
+  },
+  "dependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}
