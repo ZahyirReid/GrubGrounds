@@ -1,0 +1,82 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <clipPath id="squircle"><rect width="1024" height="1024" rx="232"/></clipPath>
+  <linearGradient id="blend" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0"    stop-color="#040407"/>
+    <stop offset="0.4"  stop-color="#3E0D68"/>
+    <stop offset="0.7"  stop-color="#6812B5"/>
+    <stop offset="1"    stop-color="#0E7FD0"/>
+  </linearGradient>
+  <radialGradient id="whiteglow" cx="0.5" cy="0.36" r="0.6">
+    <stop offset="0"    stop-color="#FFFFFF" stop-opacity="0.18"/>
+    <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0.05"/>
+    <stop offset="1"    stop-color="#FFFFFF" stop-opacity="0"/>
+  </radialGradient>
+  <linearGradient id="rice" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#FFFFFF"/>
+    <stop offset="1" stop-color="#E6EAF4"/>
+  </linearGradient>
+</defs>
+
+<g clip-path="url(#squircle)">
+  <rect width="1024" height="1024" fill="url(#blend)"/>
+  <rect width="1024" height="1024" fill="url(#whiteglow)"/>
+
+  <!-- cartoon sparkles -->
+  <path d="M 208 268 l 10 26 26 10 -26 10 -10 26 -10 -26 -26 -10 26 -10 Z" fill="#FFFFFF" opacity="0.9"/>
+  <path d="M 822 214 l 8 20 20 8 -20 8 -8 20 -8 -20 -20 -8 20 -8 Z" fill="#FFFFFF" opacity="0.75"/>
+  <path d="M 852 560 l 6 16 16 6 -16 6 -6 16 -6 -16 -16 -6 16 -6 Z" fill="#FFFFFF" opacity="0.6"/>
+
+  <!-- flat cartoon shadow -->
+  <ellipse cx="512" cy="782" rx="248" ry="28" fill="#000000" opacity="0.4"/>
+
+  <!-- sticker-style white border around the whole bowl + rice silhouette -->
+  <path d="M 274 500
+           A 40 40 0 0 1 342 476
+           A 40 40 0 0 1 412 462
+           A 40 40 0 0 1 482 454
+           A 40 40 0 0 1 552 456
+           A 40 40 0 0 1 620 466
+           A 40 40 0 0 1 688 482
+           A 38 38 0 0 1 750 500
+           A 238 238 0 0 1 274 500 Z"
+        fill="#000000" stroke="#FFFFFF" stroke-width="30" stroke-linejoin="round"/>
+
+  <!-- gently mounded rice with a bold outline (low bumps, not cloud puffs) -->
+  <path d="M 274 500
+           A 40 40 0 0 1 342 476
+           A 40 40 0 0 1 412 462
+           A 40 40 0 0 1 482 454
+           A 40 40 0 0 1 552 456
+           A 40 40 0 0 1 620 466
+           A 40 40 0 0 1 688 482
+           A 38 38 0 0 1 750 500
+           Q 512 548 274 500 Z"
+        fill="url(#rice)" stroke="#000000" stroke-width="11" stroke-linejoin="round"/>
+
+  <!-- lots of little grain marks so it reads as rice -->
+  <g stroke="#B9C2D6" stroke-width="7" stroke-linecap="round" fill="none">
+    <path d="M 330 494 q 10 -9 22 -5"/>
+    <path d="M 376 480 q 10 -9 22 -5"/>
+    <path d="M 428 470 q 10 -9 22 -5"/>
+    <path d="M 484 464 q 10 -9 22 -5"/>
+    <path d="M 540 464 q 10 -9 22 -5"/>
+    <path d="M 594 472 q 10 -9 22 -5"/>
+    <path d="M 646 484 q 10 -9 22 -5"/>
+    <path d="M 696 498 q 8 -8 18 -4"/>
+    <path d="M 356 500 q 10 -9 22 -5"/>
+    <path d="M 452 488 q 10 -9 22 -5"/>
+    <path d="M 516 486 q 10 -9 22 -5"/>
+    <path d="M 578 494 q 10 -9 22 -5"/>
+    <path d="M 636 504 q 9 -8 20 -4"/>
+  </g>
+
+  <!-- round black bowl -->
+  <path d="M 274 500 Q 512 548 750 500 A 238 238 0 0 1 274 500 Z" fill="#000000"/>
+  <path d="M 274 500 Q 512 548 750 500" fill="none" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round"/>
+
+  <!-- two chunky white G's -->
+  <text x="512" y="672" text-anchor="middle" font-family="DejaVu Sans" font-weight="bold" font-size="164"
+        fill="#FFFFFF" letter-spacing="6">GG</text>
+</g>
+</svg>

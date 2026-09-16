@@ -478,6 +478,40 @@ const RECIPES = [
 let USER_RECIPES = [];
 const allRecipes = () => RECIPES.concat(USER_RECIPES);
 
+/* ---------------- DIGITAL COUPONS ---------------- */
+/* Some chains accept digital coupons; others (Aldi, Costco, Trader Joe's) have everyday-low-price policies and don't. */
+const NO_COUPON_STORES = ["aldi", "costco", "tj"];
+const storeAllowsCoupons = (id) => !NO_COUPON_STORES.includes(id);
+const STORE_COUPONS = [
+  { id: "cp1", store: "kroger", label: "$5 off a $40 cart", code: "KRO5OFF40", type: "amount", value: 5, min: 40 },
+  { id: "cp2", store: "kroger", label: "Free delivery, any cart", code: "KROSHIP", type: "ship" },
+  { id: "cp3", store: "publix", label: "10% off up to $8", code: "PBX10", type: "percent", value: 10, cap: 8 },
+  { id: "cp4", store: "walmart", label: "$3 off a $25 cart", code: "WMT3OFF25", type: "amount", value: 3, min: 25 },
+  { id: "cp5", store: "target", label: "5% off your order", code: "TGT5", type: "percent", value: 5 },
+  { id: "cp6", store: "wf", label: "$7 off a $60 cart", code: "WF7OFF60", type: "amount", value: 7, min: 60 },
+  { id: "cp7", store: "sprouts", label: "$4 off a $30 cart", code: "SPR4OFF30", type: "amount", value: 4, min: 30 },
+  { id: "cp8", store: "lidl", label: "Free delivery on $20+", code: "LIDLSHIP", type: "ship", min: 20 },
+];
+function couponDiscount(c, subtotal, fee) {
+  if (!c) return 0;
+  if (c.min && subtotal < c.min) return 0;
+  if (c.type === "amount") return Math.min(c.value, subtotal);
+  if (c.type === "percent") return Math.min(+(subtotal * c.value / 100).toFixed(2), c.cap || 999);
+  if (c.type === "ship") return fee;
+  return 0;
+}
+async function readCouponCode(b64, mime) {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content: [
+      { type: "image", source: { type: "base64", media_type: mime, data: b64 } },
+      { type: "text", text: "This photo shows a coupon or a code. Extract the alphanumeric coupon code. Reply with ONLY the code, uppercase, no spaces, nothing else. If you can't find a code, reply NONE." },
+    ] }] }),
+  });
+  const data = await response.json();
+  return (data.content || []).map((i) => i.text || "").join("").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
 const FRIENDS_INIT = [
   { id: "f1", name: "Jamal Ford", handle: "jford.eats", emoji: "🧑🏾‍🍳", status: "Cooking tonight", friend: true },
   { id: "f2", name: "Maya Chen", handle: "chef.maya", emoji: "👩‍🍳", status: "Posted a new recipe", friend: true },
@@ -730,7 +764,7 @@ App sections: Feed (social posts + Grub Cuts), Discover (recipes, filters, desse
 
 /* ---------------- FEED ---------------- */
 
-function FeedScreen({ posts, setPosts, openRecipe, friends, streak, joinedChallenges, onJoin, follows, toggleFollow, onReport, lang, planner, savedForAlerts, schedulePost, scheduled, cancelScheduled, openMedia, plusUser, onShare }) {
+function FeedScreen({ posts, setPosts, openRecipe, friends, streak, joinedChallenges, onJoin, follows, toggleFollow, onReport, lang, planner, savedForAlerts, schedulePost, scheduled, cancelScheduled, openMedia, plusUser, favorites, onShare }) {
   const hour = new Date().getHours();
   const greet = tr(lang, hour < 12 ? "gm" : hour < 18 ? "ga" : "ge");
   const todayName = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date().getDay()];
@@ -749,6 +783,15 @@ function FeedScreen({ posts, setPosts, openRecipe, friends, streak, joinedChalle
   const [when, setWhen] = useState("");
   const [showWhen, setShowWhen] = useState(false);
   const mediaRef = useRef(null);
+  const [editing, setEditing] = useState(null); // post being edited
+
+  function patchPost(id, patch) {
+    setPosts((ps) => ps.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  }
+  function boostPost(id, budget) {
+    const gained = budget * (100 + Math.floor(Math.random() * 40));
+    setPosts((ps) => ps.map((x) => (x.id === id ? { ...x, boosted: true, boostBudget: budget, likes: x.likes + Math.floor(budget * 8) } : x)));
+  }
 
   function pickMedia(e) {
     const f = e.target.files && e.target.files[0];
@@ -787,14 +830,14 @@ function FeedScreen({ posts, setPosts, openRecipe, friends, streak, joinedChalle
     } else {
       setPosts((ps) => [p, ...ps]);
     }
-    setComposer(""); setMedia(null); setWhen(""); setShowWhen(false); setMediaErr("");
+    setComposer(""); setMedia(null); setWhen(""); setShowWhen(false); setMediaErr(""); stopMusic();
   }
 
   return (
     <div style={{ maxWidth: 620, margin: "0 auto" }}>
       <div className="eyebrow">The Feed</div>
-      <h1 className="h-page">What the world is cooking</h1>
-      <p className="sub" style={{ marginBottom: 14 }}>Photos, videos, and Grub Cuts from foodies everywhere.</p>
+      <h1 className="h-page">{T("feedT")}</h1>
+      <p className="sub" style={{ marginBottom: 14 }}>{T("feedS")}</p>
 
       <div className="card" style={{ padding: "12px 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
         <span className={streak > 0 ? "flame" : ""} style={{ fontSize: 24 }}>🔥</span>
@@ -839,7 +882,7 @@ function FeedScreen({ posts, setPosts, openRecipe, friends, streak, joinedChalle
 
       <div className="card" style={{ padding: 14, marginBottom: 20 }}>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <div style={{ fontSize: 24 }}>😋</div>
+          {MY_PHOTO ? <Avatar photo={MY_PHOTO} emoji="😋" size={32} /> : <div style={{ fontSize: 24 }}>😋</div>}
           <input className="inp" placeholder="Share what you're cooking…" value={composer} onChange={(e) => setComposer(e.target.value)} onKeyDown={(e) => e.key === "Enter" && post()} />
         </div>
         <input ref={mediaRef} type="file" accept="image/*,video/*" onChange={pickMedia} style={{ display: "none" }} />
@@ -849,7 +892,19 @@ function FeedScreen({ posts, setPosts, openRecipe, friends, streak, joinedChalle
               ? <video src={media.url} muted playsInline style={{ height: 74, borderRadius: 10, background: "#000" }} />
               : <img src={media.url} alt="Attached" style={{ height: 74, borderRadius: 10, objectFit: "cover" }} />}
             <div style={{ fontSize: 12, color: "var(--muted)", flex: 1 }}>{media.type === "video" ? "🎬 Video" + (media.duration ? " · " + fmtDur(media.duration) : "") : "🖼️ Photo"} attached</div>
-            <button className="chip" onClick={() => setMedia(null)}>✕ Remove</button>
+            <button className="chip" onClick={() => { setMedia(null); stopMusic(); }}>✕ Remove</button>
+          </div>
+        )}
+        {media && media.type === "video" && (
+          <input className="inp" style={{ marginTop: 8, padding: "8px 12px", fontSize: 12.5 }} placeholder={"💬 Captions — type what's said in the video so everyone can read along (viewers can translate them)"} value={media.captions || ""} onChange={(e) => setMedia((m) => ({ ...m, captions: e.target.value }))} />
+        )}
+        {media && media.type === "image" && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
+            <span style={{ fontSize: 11.5, color: "var(--dim)" }}>🎵 Music:</span>
+            <button className={"chip" + (!media.music ? " on" : "")} style={{ padding: "5px 10px", fontSize: 11.5 }} onClick={() => { setMedia((m) => ({ ...m, music: undefined })); stopMusic(); }}>None</button>
+            {MUSIC_TRACKS.map((t) => (
+              <button key={t.id} className={"chip" + (media.music === t.id ? " on" : "")} style={{ padding: "5px 10px", fontSize: 11.5 }} onClick={() => { setMedia((m) => ({ ...m, music: t.id })); playMusic(t.id); }}>{t.emoji} {t.name}</button>
+            ))}
           </div>
         )}
         {mediaErr && <p style={{ color: "#FF7A9C", fontSize: 12, marginTop: 8 }}>{mediaErr}</p>}
@@ -885,30 +940,44 @@ function FeedScreen({ posts, setPosts, openRecipe, friends, streak, joinedChalle
         </div>
       )}
 
-      {posts.map((p) => {
+      {editing && <PostEditor p={editing} onClose={() => { setEditing(null); stopMusic(); }} onSave={(patch) => patchPost(editing.id, patch)} onDelete={() => setPosts((ps) => ps.filter((x) => x.id !== editing.id))} onBoost={(b) => boostPost(editing.id, b)} />}
+      {[...posts].sort((a, b) => ((b.pinned ? 2 : 0) + (favorites.includes(b.user) ? 1 : 0)) - ((a.pinned ? 2 : 0) + (favorites.includes(a.user) ? 1 : 0))).map((p) => {
         const r = p.recipeId ? byId(p.recipeId) : null;
-        return <Post key={p.id} p={p} r={r} onLike={() => toggleLike(p.id)} onComment={(t, parent) => addComment(p.id, t, parent)} onOpen={() => r && openRecipe(r)} onShare={() => onShare(p)} following={follows.includes(p.user)} onFollow={() => toggleFollow(p.user)} onReport={() => onReport(p)} openMedia={openMedia} plusUser={plusUser} />;
+        return <Post key={p.id} p={p} r={r} onLike={() => toggleLike(p.id)} onComment={(t, parent) => addComment(p.id, t, parent)} onOpen={() => r && openRecipe(r)} onShare={() => onShare(p)} following={follows.includes(p.user)} onFollow={() => toggleFollow(p.user)} onReport={() => onReport(p)} onEdit={() => setEditing(p)} openMedia={openMedia} plusUser={plusUser} />;
       })}
     </div>
   );
 }
 
-function Post({ p, r, onLike, onComment, onOpen, onShare, following, onFollow, onReport, openMedia, plusUser }) {
+function Post({ p, r, onLike, onComment, onOpen, onShare, following, onFollow, onReport, onEdit, openMedia, plusUser }) {
   const [c, setC] = useState("");
   const [showC, setShowC] = useState(false);
+  const [trans, setTrans] = useState(null); // translated caption
+  const [showTrans, setShowTrans] = useState(false);
+  const [transBusy, setTransBusy] = useState(false);
+  async function doTranslate() {
+    if (showTrans) { setShowTrans(false); return; }
+    if (trans) { setShowTrans(true); return; }
+    setTransBusy(true);
+    try { const t = await aiTranslate(p.caption, CURRENT_LANG); if (t) { setTrans(t); setShowTrans(true); } } catch (e) {}
+    setTransBusy(false);
+  }
   const [replyTo, setReplyTo] = useState(null);
   const [reply, setReply] = useState("");
   return (
     <div className="card post">
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px" }}>
-        <div style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--panel2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17 }}>{p.emoji}</div>
+        {p.user === "you" && MY_PHOTO
+          ? <Avatar photo={MY_PHOTO} emoji={p.emoji} />
+          : <div style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--panel2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17 }}>{p.emoji}</div>}
         <div style={{ flex: 1 }}>
           <b style={{ fontSize: 13.5 }}>@{p.user}{p.user === "you" && plusUser && <span title="GrubPlus member" style={{ color: "#F5C542", marginLeft: 3 }}>✦</span>}</b>
-          <div style={{ fontSize: 11, color: "var(--dim)" }}>{p.time} ago {p.cut && "· 🎬 Grub Cut"}{p.cookedIt && <span style={{ color: "#7DE3A0" }}> · ✅ Cooked it</span>}</div>
+          <div style={{ fontSize: 11, color: "var(--dim)" }}>{p.time} ago {p.cut && "· 🎬 Grub Cut"}{p.cookedIt && <span style={{ color: "#7DE3A0" }}> · ✅ Cooked it</span>}{p.edited && " · edited"}{p.pinned && " · 📌 Pinned"}{p.boosted && <span style={{ color: "#F5C542" }}> · 🚀 Boosted</span>}{p.media && p.media.music && <span style={{ color: "var(--royal-soft)" }}> · 🎵 {trackName(p.media.music)}</span>}</div>
         </div>
         {p.user !== "you" && <button className={"chip" + (following ? " on" : "")} onClick={onFollow}>{following ? "Following ✓" : "Follow"}</button>}
         {r && <button className="chip" onClick={onOpen}>View recipe</button>}
         {p.user !== "you" && <button className="chip" onClick={onReport} aria-label="Post options" title="Report or block">⋯</button>}
+        {p.user === "you" && <button className="chip" onClick={onEdit} aria-label="Edit post" title="Edit, boost, or delete">✏️</button>}
       </div>
       {p.media ? (
         <div style={{ position: "relative", cursor: "zoom-in", background: "#000" }} onClick={() => openMedia(p.media)} title="Tap to view full-screen">
@@ -929,13 +998,23 @@ function Post({ p, r, onLike, onComment, onOpen, onShare, following, onFollow, o
           <span style={{ filter: "drop-shadow(0 10px 24px rgba(0,0,0,.45))" }}>{r.emoji}</span>
         </div>
       )}
-      <div style={{ padding: "12px 14px 6px", fontSize: 13.5, lineHeight: 1.5 }}>{p.caption}</div>
+      <div style={{ padding: "12px 14px 6px", fontSize: 13.5, lineHeight: 1.5 }}>
+        {showTrans && trans ? trans : p.caption}
+        {CURRENT_LANG !== "en" && p.caption && (
+          <button style={{ display: "block", fontSize: 11, color: "var(--royal-soft)", marginTop: 4 }} onClick={doTranslate}>
+            {transBusy ? "…" : "🌐 " + (showTrans ? T("original") : T("translate"))}
+          </button>
+        )}
+      </div>
       <div style={{ display: "flex", padding: "4px 8px 8px" }}>
-        <button className={"act" + (p.liked ? " liked" : "")} onClick={onLike}>{p.liked ? "♥" : "♡"} {p.likes.toLocaleString()}</button>
-        <button className="act" onClick={() => setShowC(!showC)}>💬 {p.comments.length}</button>
+        <button className={"act" + (p.liked ? " liked" : "")} onClick={onLike}>{p.liked ? "♥" : "♡"} {p.hideLikes ? "—" : p.likes.toLocaleString()}</button>
+        <button className="act" onClick={() => setShowC(!showC)}>💬 {p.commentsOff ? "off" : p.comments.length}</button>
         <button className="act" onClick={onShare}>↗ Share</button>
       </div>
-      {showC && (
+      {showC && p.commentsOff && (
+        <div style={{ borderTop: "1px solid var(--line)", padding: "10px 14px 14px" }}><p className="sub" style={{ fontSize: 12 }}>💬 Comments are turned off for this post.</p></div>
+      )}
+      {showC && !p.commentsOff && (
         <div style={{ borderTop: "1px solid var(--line)", padding: "10px 14px 14px" }}>
           {p.comments.map((cm, i) => (
             <div key={i} style={{ marginBottom: 8 }}>
@@ -1000,7 +1079,7 @@ function DiscoverScreen({ openRecipe, saved, onSave, filters, setFilters, viewed
       <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 220 }}>
           <div className="eyebrow">Discover</div>
-          <h1 className="h-page">Find your next plate</h1>
+          <h1 className="h-page">{T("discT")}</h1>
           <p className="sub" style={{ marginBottom: 16 }}>Filter by diet, browse by mood, or recreate your favorite restaurant order.</p>
         </div>
         <button className="btn btn-grad" onClick={onCreate}>＋ Create recipe</button>
@@ -1095,9 +1174,9 @@ function RecipeDetail({ r, back, addAllToCart, pantry, follows, toggleFollow, st
           )}
 
           <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
-            <button className="btn btn-grad" onClick={() => addAllToCart(r, swaps, factor)}>🛒 Add all to cart</button>
-            <button className="btn btn-ghost" onClick={startCooking}>▶ Cook mode</button>
-            <button className="btn btn-ghost" onClick={onCooked}>✅ I cooked this</button>
+            <button className="btn btn-grad" onClick={() => addAllToCart(r, swaps, factor)}>🛒 {T("addCart")}</button>
+            <button className="btn btn-ghost" onClick={startCooking}>▶ {T("cook")}</button>
+            <button className="btn btn-ghost" onClick={onCooked}>✅ {T("cooked")}</button>
             <button className="btn btn-ghost" onClick={() => onSave(r.id)}>{saved ? "🔖 Saved" : "📑 Save to gallery"}</button>
             <button className="btn btn-ghost" onClick={onShareRecipe}>↗ Share with friends</button>
             <button className="btn btn-ghost" onClick={() => downloadSavingsCard(r)} title="Download a branded card for TikTok / Instagram">📸 Savings card</button>
@@ -1281,8 +1360,42 @@ function GroceryTile({ g, st, count, onAdd, onSub }) {
 
 function hashStr(s) { let h = 7; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; }
 
-function ShoppingScreen({ cart, setCart, store, setStore, budget, setBudget, savedRecipes, orders, placeOrder, reorder, friends, plus, goPlus }) {
+function ShoppingScreen({ cart, setCart, store, setStore, budget, setBudget, savedRecipes, orders, placeOrder, reorder, friends, plus, goPlus, clipped, usedCoupons, clipCoupon, aiEnabled }) {
   const [splitWith, setSplitWith] = useState([]);
+  const [appliedId, setAppliedId] = useState(null);
+  const [codeInput, setCodeInput] = useState("");
+  const [couponMsg, setCouponMsg] = useState("");
+  const [scanBusy, setScanBusy] = useState(false);
+  const couponScanRef = useRef(null);
+  function tryApply(codeOrId, viaCode) {
+    const c = viaCode
+      ? STORE_COUPONS.find((x) => x.code === codeOrId)
+      : STORE_COUPONS.find((x) => x.id === codeOrId);
+    if (!c) { setCouponMsg("❌ That code isn't one of ours — double-check it."); return; }
+    if (usedCoupons.includes(c.id)) { setCouponMsg("❌ That coupon was already used."); return; }
+    if (c.store !== st.id) { setCouponMsg(`❌ That coupon is for ${STORES.find((s) => s.id === c.store).name} — switch stores to use it.`); return; }
+    if (!storeAllowsCoupons(st.id)) { setCouponMsg(`❌ ${st.name} doesn't accept digital coupons.`); return; }
+    if (c.min && cartTotal(cart, st) < c.min) { setCouponMsg(`⚠️ ${c.label} needs a $${c.min}+ cart — you're at $${cartTotal(cart, st).toFixed(2)}.`); return; }
+    setAppliedId(c.id);
+    setCouponMsg("✅ " + c.label + " applied!");
+    setCodeInput("");
+  }
+  async function scanCoupon(e) {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    setScanBusy(true); setCouponMsg("");
+    const r = new FileReader();
+    r.onload = async () => {
+      try {
+        const code = await readCouponCode(String(r.result).split(",")[1], f.type || "image/jpeg");
+        if (!code || code === "NONE") setCouponMsg("❌ Couldn't read a code in that photo — try again closer, or type it.");
+        else tryApply(code, true);
+      } catch (err) { setCouponMsg("❌ Scan hiccup — type the code instead."); }
+      setScanBusy(false);
+    };
+    r.readAsDataURL(f);
+  }
   const [tab, setTab] = useState("browse");
   const [q, setQ] = useState("");
   const [cat, setCat] = useState("All");
@@ -1322,7 +1435,9 @@ function ShoppingScreen({ cart, setCart, store, setStore, budget, setBudget, sav
 
   const subtotal = cartTotal(cart, st);
   const feeInfo = deliveryFee(st, subtotal, plus);
-  const total = subtotal + (cart.length ? feeInfo.fee : 0);
+  const applied = appliedId ? STORE_COUPONS.find((x) => x.id === appliedId) : null;
+  const couponOff = cart.length ? couponDiscount(applied, subtotal, feeInfo.fee) : 0;
+  const total = Math.max(0, subtotal + (cart.length ? feeInfo.fee : 0) - couponOff);
   const remaining = budget - total;
   const over = remaining < 0;
   const itemCount = cart.reduce((s, i) => s + i.count, 0);
@@ -1381,7 +1496,7 @@ function ShoppingScreen({ cart, setCart, store, setStore, budget, setBudget, sav
   return (
     <div style={{ maxWidth: 820, margin: "0 auto" }}>
       <div className="eyebrow">Shopping</div>
-      <h1 className="h-page">Groceries, delivered your way</h1>
+      <h1 className="h-page">{T("shopT")}</h1>
       <p className="sub" style={{ marginBottom: 16 }}>Browse like DoorDash, pay like a genius — we compare every item across stores and keep you inside budget.</p>
 
       {/* store locator */}
@@ -1456,6 +1571,28 @@ function ShoppingScreen({ cart, setCart, store, setStore, budget, setBudget, sav
             <button className="chip" onClick={goPlus}>Start free trial</button>
           </div>
         )}
+      </Disclosure>
+
+      <Disclosure icon="🎟️" summary={storeAllowsCoupons(st.id)
+        ? <span><b>Digital coupons at {st.name}</b> — clip them, use them at checkout</span>
+        : <span>{st.name} doesn't accept digital coupons (everyday-low-price store)</span>}>
+        {!storeAllowsCoupons(st.id) && <p className="sub" style={{ fontSize: 12 }}>Some chains skip coupons entirely and keep base prices low instead. Your clipped coupons stay in your wallet for participating stores.</p>}
+        {storeAllowsCoupons(st.id) && STORE_COUPONS.filter((c) => c.store === st.id).map((c) => {
+          const isClipped = clipped.includes(c.id), isUsed = usedCoupons.includes(c.id);
+          return (
+            <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
+              <span style={{ fontSize: 18 }}>🎟️</span>
+              <div style={{ flex: 1 }}>
+                <b style={{ fontSize: 12.5 }}>{c.label}</b>
+                <div style={{ fontSize: 10.5, color: "var(--dim)" }}>Code: {c.code}{c.min ? ` · $${c.min}+ cart` : ""}</div>
+              </div>
+              {isUsed ? <span className="pill-sm tag-dark">Used ✓</span>
+                : isClipped ? <span className="pill-sm" style={{ background: "rgba(125,227,160,.15)", color: "#7DE3A0" }}>✂️ Clipped</span>
+                : <button className="chip on" onClick={() => clipCoupon(c.id)}>✂️ Clip</button>}
+            </div>
+          );
+        })}
+        <p className="sub" style={{ fontSize: 11, marginTop: 8 }}>💡 You also earn a fresh coupon after every order at participating stores.</p>
       </Disclosure>
 
       {savingsAlerts.length > 0 && (
@@ -1540,12 +1677,39 @@ function ShoppingScreen({ cart, setCart, store, setStore, budget, setBudget, sav
                   <span>Delivery — {st.name} ({st.eta}){feeInfo.deal && <span style={{ color: "#7DE3A0" }}> · {feeInfo.deal.label}</span>}</span>
                   <span>{feeInfo.deal && <s style={{ color: "var(--dim)", marginRight: 6 }}>${feeInfo.base.toFixed(2)}</s>}{feeInfo.fee === 0 ? <b style={{ color: "#7DE3A0" }}>FREE</b> : "$" + feeInfo.fee.toFixed(2)}</span>
                 </div>
+                {couponOff > 0 && applied && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5, color: "#7DE3A0" }}>
+                    <span>🎟️ {applied.label} ({applied.code})</span><span>−${couponOff.toFixed(2)}</span>
+                  </div>
+                )}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 8, borderTop: "1px solid var(--line)" }}>
                   <b style={{ color: "var(--white)" }}>Total</b>
                   <b className="disp" style={{ fontSize: 20, color: over ? "#FF7A9C" : "#7DE3A0" }}>${total.toFixed(2)}</b>
                 </div>
               </div>
               <div style={{ marginTop: 14, padding: "12px 14px", background: "var(--panel2)", borderRadius: 12 }}>
+                <div className="eyebrow" style={{ marginBottom: 6 }}>🎟️ Coupons at checkout</div>
+                {!storeAllowsCoupons(st.id) && <p className="sub" style={{ fontSize: 12 }}>{st.name} doesn't accept digital coupons.</p>}
+                {storeAllowsCoupons(st.id) && (
+                  <>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                      {STORE_COUPONS.filter((c) => c.store === st.id && clipped.includes(c.id) && !usedCoupons.includes(c.id)).map((c) => (
+                        <button key={c.id} className={"chip" + (appliedId === c.id ? " on" : "")} onClick={() => (appliedId === c.id ? (setAppliedId(null), setCouponMsg("")) : tryApply(c.id, false))}>🎟️ {c.label}</button>
+                      ))}
+                      {STORE_COUPONS.filter((c) => c.store === st.id && clipped.includes(c.id) && !usedCoupons.includes(c.id)).length === 0 && <span className="sub" style={{ fontSize: 11.5 }}>No clipped coupons for {st.name} — clip some in Browse, or enter a code:</span>}
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <input className="inp" style={{ padding: "8px 12px", maxWidth: 170, textTransform: "uppercase" }} placeholder="Coupon code" value={codeInput} onChange={(e) => setCodeInput(e.target.value.toUpperCase())} onKeyDown={(e) => e.key === "Enter" && tryApply(codeInput.trim(), true)} />
+                      <button className="chip" onClick={() => tryApply(codeInput.trim(), true)} disabled={!codeInput.trim()}>Apply</button>
+                      <input ref={couponScanRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={scanCoupon} />
+                      <button className="chip" onClick={() => couponScanRef.current.click()} disabled={scanBusy || !aiEnabled} title={aiEnabled ? "Photograph a coupon and we'll read the code" : "Enable the AI assistant to scan coupons"}>{scanBusy ? "Reading…" : "📷 Scan coupon"}</button>
+                    </div>
+                    {couponMsg && <p style={{ fontSize: 12, marginTop: 8, color: couponMsg.startsWith("✅") ? "#7DE3A0" : couponMsg.startsWith("⚠️") ? "#F5C542" : "#FF7A9C" }}>{couponMsg}</p>}
+                  </>
+                )}
+              </div>
+
+              <div style={{ marginTop: 12, padding: "12px 14px", background: "var(--panel2)", borderRadius: 12 }}>
                 <div className="eyebrow" style={{ marginBottom: 6 }}>👥 Group cart — split the cost</div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: splitWith.length ? 8 : 0 }}>
                   {friends.filter((f) => f.friend).map((f) => (
@@ -1554,7 +1718,7 @@ function ShoppingScreen({ cart, setCart, store, setStore, budget, setBudget, sav
                 </div>
                 {splitWith.length > 0 && <div style={{ fontSize: 12.5, color: "#7DE3A0" }}>Split {splitWith.length + 1} ways: <b>${(total / (splitWith.length + 1)).toFixed(2)} each</b> — we'll send everyone their share.</div>}
               </div>
-              <button className="btn btn-grad" style={{ width: "100%", marginTop: 12 }} onClick={() => placeOrder({ id: "o" + Date.now(), store: st.name, eta: st.eta, items: cart.map((c) => ({ ...c })), total: +total.toFixed(2), split: splitWith.length + 1, date: new Date().toLocaleDateString() })}>Checkout at {st.name} · ${total.toFixed(2)}{splitWith.length ? ` (${(total / (splitWith.length + 1)).toFixed(2)} each)` : ""} →</button>
+              <button className="btn btn-grad" style={{ width: "100%", marginTop: 12 }} onClick={() => { placeOrder({ id: "o" + Date.now(), store: st.name, storeId: st.id, eta: st.eta, items: cart.map((c) => ({ ...c })), total: +total.toFixed(2), couponId: appliedId, couponOff: +couponOff.toFixed(2), split: splitWith.length + 1, date: new Date().toLocaleDateString() }); setAppliedId(null); setCouponMsg(""); }}>Checkout at {st.name} · ${total.toFixed(2)}{splitWith.length ? ` (${(total / (splitWith.length + 1)).toFixed(2)} each)` : ""} →</button>
               <p className="sub" style={{ fontSize: 11, marginTop: 10, textAlign: "center" }}>Orders are fulfilled by our store partners. GrubGrounds earns a small commission at no extra cost to you — it's how we keep the feed free.</p>
               <button className="btn btn-ghost" style={{ width: "100%", marginTop: 8 }} onClick={() => setCart([])}>Empty cart</button>
             </>
@@ -1570,7 +1734,7 @@ function ShoppingScreen({ cart, setCart, store, setStore, budget, setBudget, sav
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <div style={{ flex: 1, minWidth: 160 }}>
                   <b style={{ fontSize: 13.5 }}>{o.store} · ${o.total.toFixed(2)}</b>
-                  <div style={{ fontSize: 11.5, color: "var(--dim)" }}>{o.date} · {o.items.reduce((s, i) => s + i.count, 0)} items{o.split > 1 ? ` · split ${o.split} ways` : ""}</div>
+                  <div style={{ fontSize: 11.5, color: "var(--dim)" }}>{o.date} · {o.items.reduce((s, i) => s + i.count, 0)} items{o.split > 1 ? ` · split ${o.split} ways` : ""}{o.couponOff > 0 && <span style={{ color: "#7DE3A0" }}> · 🎟️ saved ${o.couponOff.toFixed(2)}</span>}</div>
                 </div>
                 <button className="btn btn-grad" style={{ padding: "8px 14px" }} onClick={() => { reorder(o); setTab("cart"); }}>↻ Reorder</button>
               </div>
@@ -1706,7 +1870,7 @@ function ScannerScreen({ aiEnabled, pantry, setPantry }) {
   return (
     <div style={{ maxWidth: 680, margin: "0 auto" }}>
       <div className="eyebrow">Food Scanner · <span style={{ color: "var(--royal-soft)" }}>Plus</span></div>
-      <h1 className="h-page">Point. Shoot. Know.</h1>
+      <h1 className="h-page">{T("scanT")}</h1>
       <p className="sub" style={{ marginBottom: 18 }}>One camera, three superpowers: macros from a plate, meals from a fridge, and a reality check on any product.</p>
 
       {!aiEnabled && <div className="card" style={{ padding: 16, marginBottom: 16, fontSize: 13, color: "var(--muted)" }}>⚠ The scanner uses the AI assistant. Turn it back on in Settings to scan.</div>}
@@ -1851,7 +2015,7 @@ function PlansScreen({ openRecipe, saved, onSave, planner, setPlanner, addWeekTo
   return (
     <div style={{ maxWidth: 760, margin: "0 auto" }}>
       <div className="eyebrow">Dietary plans & macros · <span style={{ color: "var(--royal-soft)" }}>custom plans are Plus</span></div>
-      <h1 className="h-page">Eat toward your goal</h1>
+      <h1 className="h-page">{T("plansT")}</h1>
       <p className="sub" style={{ marginBottom: 18 }}>Pick a health goal and we'll surface the meals that get you there — or build your own custom plan and watch the macros add up.</p>
 
       <Disclosure icon="📊" summary={today.cal > 0 ? <span>Today: <b>{today.cal} cal · {today.protein}g protein</b> — tap for the week</span> : "Nutrition tracker — fills in as you cook"}>
@@ -1974,7 +2138,7 @@ function GalleryScreen({ saved, setSaved, openRecipe, goDiscover }) {
   return (
     <div>
       <div className="eyebrow">Gallery</div>
-      <h1 className="h-page">Your saved collection</h1>
+      <h1 className="h-page">{T("galT")}</h1>
       <p className="sub" style={{ marginBottom: 14 }}>Everything you've bookmarked to make later — plus your own recipes. Organize into collections, flip anything public or private.</p>
 
       <div className="scroll-x" style={{ marginBottom: 16 }}>
@@ -2110,7 +2274,7 @@ function FriendsScreen({ friends, setFriends, dms, setDms }) {
   return (
     <div style={{ maxWidth: 620, margin: "0 auto" }}>
       <div className="eyebrow">Friends</div>
-      <h1 className="h-page">Your food circle</h1>
+      <h1 className="h-page">{T("frT")}</h1>
       <p className="sub" style={{ marginBottom: 18 }}>Send posts, recipes, and dishes you want to make — straight to the people you cook for.</p>
 
       <div className="card" style={{ padding: 18, marginBottom: 18, background: "linear-gradient(120deg, rgba(31,169,244,.12), rgba(104,18,181,.16))", borderColor: "var(--royal)" }}>
@@ -2258,8 +2422,7 @@ function ShareModal({ item, friends, onClose }) {
   );
 }
 
-function ProfileScreen({ aiEnabled, setAiEnabled, showTutorial, allergies, setAllergies, plus, startPlus, theme, applyTheme, badges, streak, planType, setPlanType, goSettings }) {
-  const isPreset = THEMES.some((t) => t.id === theme.id);
+function ProfileScreen({ profile, setProfile, posts, follows, saved, openRecipe, openMedia, badges, streak, allergies, setAllergies, goSettings }) {
   const ALLERGY_OPTS = ["dairy", "gluten", "egg", "fish", "soy", "sesame", "nuts"];
   const allergyChips = [...ALLERGY_OPTS, ...allergies.filter((a) => !ALLERGY_OPTS.includes(a))];
   const [customAllergy, setCustomAllergy] = useState("");
@@ -2268,11 +2431,144 @@ function ProfileScreen({ aiEnabled, setAiEnabled, showTutorial, allergies, setAl
     if (n && !allergies.includes(n)) setAllergies((al) => [...al, n]);
     setCustomAllergy("");
   }
+  const [tab, setTab] = useState("posts");
+  const [editing, setEditing] = useState(false);
+  const photoRef = useRef(null);
+  const [photoErr, setPhotoErr] = useState("");
+  const [rawPhoto, setRawPhoto] = useState(null); // original upload, for manual cropping
+  const [cropOpen, setCropOpen] = useState(false);
+  const [crop, setCrop] = useState({ z: 1, x: 50, y: 50 });
+  const [cropBig, setCropBig] = useState(false);
+  function applyCrop(c) {
+    const img = new Image();
+    img.onload = () => {
+      const S = 256, cv = document.createElement("canvas");
+      cv.width = S; cv.height = S;
+      const side = Math.min(img.width, img.height) / c.z;
+      const sx = (img.width - side) * c.x / 100, sy = (img.height - side) * c.y / 100;
+      cv.getContext("2d").drawImage(img, sx, sy, side, side, 0, 0, S, S);
+      setPf((x) => ({ ...x, photo: cv.toDataURL("image/jpeg", 0.82) }));
+    };
+    img.src = rawPhoto;
+  }
+  const [pf, setPf] = useState(profile);
+  const myPosts = posts.filter((p) => p.user === "you" && !p.archived);
+  const likedPosts = posts.filter((p) => p.liked && !p.archived);
+  const savedRecipes = saved.map((s) => allRecipes().find((r) => r.id === s.id)).filter(Boolean);
+  const followers = 128 + Math.floor(follows.length * 1.5);
+
+  const MiniPost = ({ p }) => (
+    <div className="card" style={{ padding: 14, marginBottom: 10 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+        {p.media && (
+          <button onClick={() => openMedia(p.media)} style={{ flexShrink: 0 }}>
+            {p.media.type === "video"
+              ? <video src={p.media.url} muted playsInline style={{ width: 58, height: 58, objectFit: "cover", borderRadius: 10, background: "#000" }} />
+              : <img src={p.media.url} alt="" style={{ width: 58, height: 58, objectFit: "cover", borderRadius: 10 }} />}
+          </button>
+        )}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, lineHeight: 1.5, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{p.user !== "you" && <b style={{ color: "var(--royal-soft)" }}>@{p.user} </b>}{p.caption || "(media post)"}</div>
+          <div style={{ fontSize: 10.5, color: "var(--dim)", marginTop: 4 }}>♥ {p.likes.toLocaleString()} · 💬 {p.comments.length} · {p.time} ago{p.pinned && " · 📌"}{p.boosted && " · 🚀"}</div>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div style={{ maxWidth: 560, margin: "0 auto" }}>
-      <div className="eyebrow">Profile</div>
-      <h1 className="h-page">Make it yours</h1>
-      <p className="sub" style={{ marginBottom: 18 }}>Your membership, achievements, themes, and preferences — all in one place. Account and legal stuff live in <button className="chip" onClick={goSettings}>⚙️ Settings</button></p>
+      <div className="card" style={{ padding: 20, marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+          <Avatar photo={profile.photo} emoji={profile.emoji} size={74} fs={36} />
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <b style={{ fontSize: 17 }}>{profile.name}</b>
+            <div style={{ fontSize: 12.5, color: "var(--royal-soft)" }}>@{profile.handle}</div>
+            {profile.bio && <p className="sub" style={{ fontSize: 12.5, marginTop: 4 }}>{profile.bio}</p>}
+          </div>
+          <button className="chip" onClick={() => { setPf(profile); setEditing(!editing); }}>{editing ? "Close" : "✏️ Edit profile"}</button>
+        </div>
+        {editing && (
+          <div style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <Avatar photo={pf.photo} emoji={pf.emoji} size={52} fs={26} />
+              <label className="chip" style={{ cursor: "pointer" }}>📷 {pf.photo ? "Change" : "Photo or GIF"}
+                <input type="file" accept="image/*,.gif" style={{ display: "none" }} onChange={(e) => {
+                  const f = e.target.files && e.target.files[0]; e.target.value = "";
+                  if (!f) return;
+                  setPhotoErr("");
+                  if (f.type === "image/gif") {
+                    if (f.size > 1000000) { setPhotoErr("That GIF is " + (f.size / 1048576).toFixed(1) + " MB — animated avatars need to be under 1 MB."); return; }
+                    const r = new FileReader();
+                    r.onload = () => setPf((x) => ({ ...x, photo: String(r.result) }));
+                    r.readAsDataURL(f);
+                  } else {
+                    const rr = new FileReader();
+                    rr.onload = () => { setRawPhoto(String(rr.result)); setCrop({ z: 1, x: 50, y: 50 }); };
+                    rr.readAsDataURL(f);
+                    downscalePhoto(f, (d, err) => { if (err) setPhotoErr(err); else setPf((x) => ({ ...x, photo: d })); });
+                  }
+                }} />
+              </label>
+              {pf.photo && <button className="chip" onClick={() => setPf((x) => ({ ...x, photo: null }))}>✕ Remove</button>}
+              {pf.photo && pf.photo.startsWith("data:image/gif") && <span className="pill-sm" style={{ background: "rgba(245,197,66,.15)", color: "#F5C542" }}>✨ Animated</span>}
+            </div>
+            {photoErr && <p style={{ color: "#FF7A9C", fontSize: 12, marginBottom: 8 }}>{photoErr}</p>}
+            <p className="sub" style={{ fontSize: 10.5, marginBottom: 8 }}>Photos are auto-cropped square. Small GIFs (under 1 MB) stay animated.</p>
+            {rawPhoto && pf.photo && !pf.photo.startsWith("data:image/gif") && (
+              <div style={{ marginBottom: 10 }}>
+                <button className="chip" onClick={() => setCropOpen(!cropOpen)}>✂️ {cropOpen ? "Done cropping" : "Adjust crop yourself"}</button>
+                {cropOpen && (
+                  <div style={{ marginTop: 10, padding: "12px 14px", background: "var(--panel2)", borderRadius: 12 }}>
+                    <div onClick={() => setCropBig(!cropBig)} title="Tap to zoom the preview" style={{ width: cropBig ? "min(78vw, 300px)" : 110, height: cropBig ? "min(78vw, 300px)" : 110, borderRadius: "50%", margin: "0 auto 8px", backgroundImage: `url(${rawPhoto})`, backgroundSize: `${crop.z * 100}%`, backgroundPosition: `${crop.x}% ${crop.y}%`, border: "2px solid var(--royal)", cursor: "zoom-in", transition: "width .2s, height .2s" }} />
+                    <p className="sub" style={{ fontSize: 10.5, textAlign: "center", marginBottom: 10 }}>🔍 Tap the circle to {cropBig ? "shrink" : "enlarge"} the preview</p>
+                    {[["z", "Zoom", 1, 3, 0.05], ["x", "Left ↔ Right", 0, 100, 1], ["y", "Up ↕ Down", 0, 100, 1]].map(([k, lb, mn, mx, stp]) => (
+                      <label key={k} style={{ display: "block", fontSize: 11.5, color: "var(--dim)", marginBottom: 6 }}>{lb}
+                        <input type="range" min={mn} max={mx} step={stp} value={crop[k]} style={{ width: "100%" }} onChange={(e) => { const c = { ...crop, [k]: +e.target.value }; setCrop(c); applyCrop(c); }} />
+                      </label>
+                    ))}
+                    <p className="sub" style={{ fontSize: 10.5 }}>The circle above is exactly what your avatar will show — auto-crop stays until you move a slider.</p>
+                  </div>
+                )}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <input className="inp" style={{ width: 60, textAlign: "center", fontSize: 20 }} value={pf.emoji} onChange={(e) => setPf((x) => ({ ...x, emoji: e.target.value }))} aria-label="Avatar emoji (fallback)" />
+              <input className="inp" placeholder="Display name" value={pf.name} onChange={(e) => setPf((x) => ({ ...x, name: e.target.value }))} />
+            </div>
+            <input className="inp" style={{ marginBottom: 8 }} placeholder="Handle" value={pf.handle} onChange={(e) => setPf((x) => ({ ...x, handle: e.target.value.replace(/[^\w.]/g, "").toLowerCase() }))} />
+            <input className="inp" style={{ marginBottom: 10 }} placeholder="Bio — tell foodies who you are" value={pf.bio} onChange={(e) => setPf((x) => ({ ...x, bio: e.target.value }))} />
+            <button className="btn btn-grad" onClick={() => { setProfile({ ...pf, name: pf.name.trim() || "You", handle: pf.handle || "you" }); setEditing(false); }}>Save profile</button>
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 26, marginTop: 16 }}>
+          <div className="stat"><b>{myPosts.length}</b><span>posts</span></div>
+          <div className="stat"><b>{followers.toLocaleString()}</b><span>followers</span></div>
+          <div className="stat"><b>{follows.length}</b><span>following</span></div>
+          {streak > 0 && <div className="stat"><b style={{ color: "#F5C542" }}>🔥 {streak}</b><span>streak</span></div>}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <button className={"chip" + (tab === "posts" ? " on" : "")} onClick={() => setTab("posts")}>📝 Posts ({myPosts.length})</button>
+        <button className={"chip" + (tab === "liked" ? " on" : "")} onClick={() => setTab("liked")}>♥ Liked ({likedPosts.length})</button>
+        <button className={"chip" + (tab === "saved" ? " on" : "")} onClick={() => setTab("saved")}>🔖 Saved ({savedRecipes.length})</button>
+      </div>
+
+      {tab === "posts" && (myPosts.length ? myPosts.map((p) => <MiniPost key={p.id} p={p} />) : <div className="card" style={{ padding: 18, marginBottom: 14 }}><p className="sub">Nothing posted yet — share what you're cooking from the Home tab.</p></div>)}
+      {tab === "liked" && (likedPosts.length ? likedPosts.map((p) => <MiniPost key={p.id} p={p} />) : <div className="card" style={{ padding: 18, marginBottom: 14 }}><p className="sub">Posts you ♥ will collect here.</p></div>)}
+      {tab === "saved" && (savedRecipes.length ? (
+        <div className="grid" style={{ marginBottom: 14 }}>
+          {savedRecipes.map((r) => (
+            <button key={r.id} className="card rcard" style={{ padding: 14, textAlign: "left" }} onClick={() => openRecipe(r)}>
+              <div style={{ fontSize: 26, marginBottom: 6 }}>{r.emoji}</div>
+              <b style={{ fontSize: 12.5 }}>{r.name}</b>
+              <div style={{ fontSize: 10.5, color: "var(--dim)", marginTop: 3 }}>{r.time} min · {r.macros.cal} cal</div>
+            </button>
+          ))}
+        </div>
+      ) : <div className="card" style={{ padding: 18, marginBottom: 14 }}><p className="sub">Bookmark recipes in Discover and they'll live here.</p></div>)}
+
+      <p className="sub" style={{ fontSize: 11.5, margin: "4px 0 14px" }}>Looking for themes, GrubPlus, or preferences? They moved to <button className="chip" onClick={goSettings}>⚙️ Settings</button></p>
 
       <div className="card" style={{ padding: 18, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
@@ -2294,89 +2590,6 @@ function ProfileScreen({ aiEnabled, setAiEnabled, showTutorial, allergies, setAl
       </div>
 
       <div className="card" style={{ padding: 18, marginBottom: 14 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
-          <div style={{ fontSize: 24 }}>🎨</div>
-          <div>
-            <b style={{ fontSize: 14 }}>Themes</b>
-            <p className="sub" style={{ fontSize: 12 }}>Recolor the whole app. Blue is the default — or build your own.</p>
-          </div>
-        </div>
-        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fill,minmax(104px,1fr))", marginBottom: 16 }}>
-          {THEMES.map((t) => {
-            const on = theme.id === t.id;
-            return (
-              <button key={t.id} onClick={() => applyTheme(t)}
-                style={{ padding: 10, borderRadius: 14, border: "1px solid " + (on ? t.a : "var(--line)"), background: on ? "var(--panel2)" : "var(--panel)", textAlign: "center" }}>
-                <div style={{ width: 40, height: 40, borderRadius: "50%", margin: "0 auto 8px", background: `linear-gradient(120deg, ${t.a}, ${t.b})`, boxShadow: on ? `0 0 0 3px var(--ink), 0 0 0 5px ${t.a}` : "none" }} />
-                <div style={{ fontSize: 11, color: on ? "var(--white)" : "var(--muted)", fontWeight: 600 }}>{t.name}{t.id === "saiyan" ? " · default" : ""}</div>
-              </button>
-            );
-          })}
-        </div>
-        <div className="eyebrow" style={{ marginBottom: 8 }}>Custom colors</div>
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
-            Primary
-            <input type="color" value={theme.a} onChange={(e) => applyTheme({ id: "custom", name: "Custom", a: e.target.value, b: theme.b })}
-              style={{ width: 42, height: 32, border: "none", borderRadius: 8, background: "none", cursor: "pointer", padding: 0 }} aria-label="Primary theme color" />
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
-            Secondary
-            <input type="color" value={theme.b} onChange={(e) => applyTheme({ id: "custom", name: "Custom", a: theme.a, b: e.target.value })}
-              style={{ width: 42, height: 32, border: "none", borderRadius: 8, background: "none", cursor: "pointer", padding: 0 }} aria-label="Secondary theme color" />
-          </label>
-          <div style={{ flex: 1, minWidth: 120, height: 32, borderRadius: 10, background: `linear-gradient(120deg, ${theme.a}, ${theme.b})` }} title="Live preview" />
-          {!isPreset && <button className="chip" onClick={() => applyTheme(THEMES[0])}>Reset to default</button>}
-        </div>
-        <p className="sub" style={{ fontSize: 11.5, marginTop: 10 }}>Your theme colors flow through buttons, gradients, badges, and highlights everywhere. Black backgrounds and white text stay put for readability.</p>
-      </div>
-
-      <div className="card" style={{ padding: 20, marginBottom: 14, background: "linear-gradient(120deg, rgba(31,169,244,.1), rgba(104,18,181,.16))", borderColor: plus ? "#7DE3A0" : "var(--royal)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-          <b className="disp" style={{ fontSize: 17 }}>Grub<span style={{ background: "var(--grad)", WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>Plus</span></b>
-          {plus
-            ? <span className="pill-sm" style={{ background: "rgba(125,227,160,.15)", color: "#7DE3A0" }}>✓ Trial active · {planType === "annual" ? "$59.99/yr" : "$7.99/mo"}</span>
-            : <span className="pill-sm tag-dark">7-day free trial</span>}
-        </div>
-        {!plus && (
-          <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr", marginBottom: 12 }}>
-            <button className="card" style={{ padding: "12px 14px", textAlign: "left", borderColor: planType === "monthly" ? "var(--royal)" : "var(--line)" }} onClick={() => setPlanType("monthly")}>
-              <b style={{ fontSize: 13.5, display: "block" }}>Monthly</b>
-              <span style={{ fontSize: 12, color: "var(--muted)" }}>$7.99 / month</span>
-            </button>
-            <button className="card" style={{ padding: "12px 14px", textAlign: "left", borderColor: planType === "annual" ? "var(--royal)" : "var(--line)", position: "relative" }} onClick={() => setPlanType("annual")}>
-              <span className="pill-sm" style={{ position: "absolute", top: -8, right: 8, background: "rgba(125,227,160,.9)", color: "#08320F" }}>Save 37%</span>
-              <b style={{ fontSize: 13.5, display: "block" }}>Annual</b>
-              <span style={{ fontSize: 12, color: "var(--muted)" }}>$59.99 / year <s style={{ color: "var(--dim)" }}>$95.88</s></span>
-            </button>
-          </div>
-        )}
-        <p className="sub" style={{ marginBottom: 12 }}>The feed, recipes, and shopping are free forever. GrubPlus unlocks the power tools — and usually pays for itself in grocery savings.</p>
-        <div style={{ display: "grid", gap: 6, gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", marginBottom: 14 }}>
-          {["✨ AI assistant + cooking mode", "📷 Food scanner (all 3 modes)", "🎯 Custom dietary plan builder", "💸 Advanced budget + savings alerts", "🚚 Rotating delivery deals & discounts", "⚡ Early access to creator drops (24h head start)", "✦ Plus member badge on your posts"].map((f) => (
-            <div key={f} style={{ fontSize: 12.5, color: "var(--muted)" }}>{f}</div>
-          ))}
-        </div>
-        {!plus && <button className="btn btn-grad" onClick={startPlus}>Start 7-day free trial · then {planType === "annual" ? "$59.99/yr" : "$7.99/mo"}</button>}
-        {plus && (
-          <div>
-            <div className="eyebrow" style={{ marginBottom: 6 }}>🚚 Your current delivery deals</div>
-            {activePlusDeals().map((d) => <div key={d.id} style={{ fontSize: 12.5, color: "#7DE3A0", padding: "2px 0" }}>✓ {d.label}</div>)}
-            <p className="sub" style={{ fontSize: 12, marginTop: 8 }}>Fresh deals rotate in every two weeks and apply automatically at checkout. Thanks for being a GrubPlus member 💙💜</p>
-          </div>
-        )}
-      </div>
-
-      <div className="card" style={{ padding: 18, marginBottom: 14, display: "flex", alignItems: "center", gap: 14 }}>
-        <div style={{ fontSize: 24 }}>✨</div>
-        <div style={{ flex: 1 }}>
-          <b style={{ fontSize: 14 }}>AI assistant</b>
-          <p className="sub" style={{ fontSize: 12 }}>Helps you navigate, pick recipes, shop, and cook. Fully optional — the app works without it.</p>
-        </div>
-        <button className={"chip" + (aiEnabled ? " on" : "")} onClick={() => setAiEnabled(!aiEnabled)} role="switch" aria-checked={aiEnabled}>{aiEnabled ? "On" : "Off"}</button>
-      </div>
-
-      <div className="card" style={{ padding: 18, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 10 }}>
           <div style={{ fontSize: 24 }}>⚠️</div>
           <div>
@@ -2393,15 +2606,6 @@ function ProfileScreen({ aiEnabled, setAiEnabled, showTutorial, allergies, setAl
           <input className="inp" style={{ padding: "8px 12px" }} placeholder="Not listed? Type your allergy (e.g. shellfish)" value={customAllergy} onChange={(e) => setCustomAllergy(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addCustomAllergy()} />
           <button className="chip" onClick={addCustomAllergy}>＋ Add</button>
         </div>
-      </div>
-
-      <div className="card" style={{ padding: 18, display: "flex", alignItems: "center", gap: 14 }}>
-        <div style={{ fontSize: 24 }}>📘</div>
-        <div style={{ flex: 1 }}>
-          <b style={{ fontSize: 14 }}>Tutorial</b>
-          <p className="sub" style={{ fontSize: 12 }}>You saw this once when you first joined — replay the walkthrough anytime.</p>
-        </div>
-        <button className="chip" onClick={showTutorial}>Replay</button>
       </div>
     </div>
   );
@@ -2435,7 +2639,38 @@ const STRINGS = {
   vi: { home: "Trang chủ", discover: "Khám phá", shop: "Mua sắm", scan: "Máy quét", plans: "Kế hoạch", profile: "Hồ sơ", settings: "Cài đặt", gm: "Chào buổi sáng", ga: "Chào buổi chiều", ge: "Chào buổi tối", ready: "Sẵn sàng nấu món ngon chưa?", tonight: "Kế hoạch tối nay", streak: "ngày liên tiếp" },
   it: { home: "Home", discover: "Scopri", shop: "Spesa", scan: "Scanner", plans: "Piani", profile: "Profilo", settings: "Impostazioni", gm: "Buongiorno", ga: "Buon pomeriggio", ge: "Buonasera", ready: "Pronto a cucinare qualcosa di buono?", tonight: "Piano di stasera", streak: "giorni di fila" },
 };
-const NAV_KEY = { feed: "home", discover: "discover", shop: "shop", scan: "scan", plans: "plans", settings: "profile", sysset: "settings" };
+const NAV_KEY = { feed: "home", discover: "discover", shop: "shop", scan: "scan", plans: "plans", gallery: "gallery", friends: "friends", communities: "communities", settings: "profile", sysset: "settings" };
+const LANG_EN = { en: "English", zh: "Simplified Chinese", hi: "Hindi", es: "Spanish", fr: "French", ar: "Arabic", bn: "Bengali", pt: "Portuguese", ru: "Russian", ja: "Japanese", de: "German", id: "Indonesian", ko: "Korean", tr: "Turkish", vi: "Vietnamese", it: "Italian" };
+let CURRENT_LANG = "en";
+const T = (k) => (STRINGS[CURRENT_LANG] && STRINGS[CURRENT_LANG][k]) || (STRINGS2[CURRENT_LANG] && STRINGS2[CURRENT_LANG][k]) || (STRINGS.en[k]) || (STRINGS2.en[k]) || k;
+async function aiTranslate(text, langId) {
+  const reply = await askClaude(
+    [{ role: "user", content: "Translate the following into " + (LANG_EN[langId] || "English") + ". Reply with ONLY the translation, nothing else:\n\n" + text }],
+    "You are a precise translator for a food app. Keep emoji, keep the tone casual, translate naturally."
+  );
+  return (reply || "").trim();
+}
+
+/* extended UI strings — core surface translated for all 16 languages */
+const STRINGS2 = {
+  en: { feedT: "What the world is cooking", feedS: "Photos, videos, and Grub Cuts from foodies everywhere.", discT: "Find your next plate", shopT: "Groceries, delivered your way", scanT: "Point. Shoot. Know.", plansT: "Eat toward your goal", galT: "Your saved collection", frT: "Your food circle", comT: "Find your food people", setT: "Account & preferences", search: "Search", cancel: "Cancel", save: "Save", del: "Delete", send: "Send", postBtn: "Post", join: "Join", joined: "Joined", follow: "Follow", following: "Following", addCart: "Add all to cart", translate: "See translation", original: "See original", captions: "Captions", cook: "Cook mode", cooked: "I cooked this" },
+  es: { feedT: "Lo que el mundo está cocinando", feedS: "Fotos, videos y Grub Cuts de foodies de todo el mundo.", discT: "Encuentra tu próximo plato", shopT: "Compras, entregadas a tu manera", scanT: "Apunta. Captura. Descubre.", plansT: "Come según tu meta", galT: "Tu colección guardada", frT: "Tu círculo foodie", comT: "Encuentra a tu gente foodie", setT: "Cuenta y preferencias", search: "Buscar", cancel: "Cancelar", save: "Guardar", del: "Eliminar", send: "Enviar", postBtn: "Publicar", join: "Unirse", joined: "Unido", follow: "Seguir", following: "Siguiendo", addCart: "Añadir todo al carrito", translate: "Ver traducción", original: "Ver original", captions: "Subtítulos", cook: "Modo cocina", cooked: "Lo cociné" },
+  fr: { feedT: "Ce que le monde cuisine", feedS: "Photos, vidéos et Grub Cuts de foodies du monde entier.", discT: "Trouvez votre prochain plat", shopT: "Courses livrées à votre façon", scanT: "Visez. Photographiez. Sachez.", plansT: "Mangez selon votre objectif", galT: "Votre collection", frT: "Votre cercle food", comT: "Trouvez votre communauté food", setT: "Compte et préférences", search: "Rechercher", cancel: "Annuler", save: "Enregistrer", del: "Supprimer", send: "Envoyer", postBtn: "Publier", join: "Rejoindre", joined: "Membre", follow: "Suivre", following: "Suivi", addCart: "Tout ajouter au panier", translate: "Voir la traduction", original: "Voir l'original", captions: "Sous-titres", cook: "Mode cuisine", cooked: "Je l'ai cuisiné" },
+  de: { feedT: "Was die Welt gerade kocht", feedS: "Fotos, Videos und Grub Cuts von Foodies überall.", discT: "Finde dein nächstes Gericht", shopT: "Einkäufe, geliefert wie du willst", scanT: "Zielen. Knipsen. Wissen.", plansT: "Iss auf dein Ziel hin", galT: "Deine gespeicherte Sammlung", frT: "Dein Food-Kreis", comT: "Finde deine Food-Leute", setT: "Konto & Einstellungen", search: "Suchen", cancel: "Abbrechen", save: "Speichern", del: "Löschen", send: "Senden", postBtn: "Posten", join: "Beitreten", joined: "Dabei", follow: "Folgen", following: "Folge ich", addCart: "Alles in den Warenkorb", translate: "Übersetzung anzeigen", original: "Original anzeigen", captions: "Untertitel", cook: "Kochmodus", cooked: "Hab ich gekocht" },
+  pt: { feedT: "O que o mundo está cozinhando", feedS: "Fotos, vídeos e Grub Cuts de foodies do mundo todo.", discT: "Encontre seu próximo prato", shopT: "Compras entregues do seu jeito", scanT: "Aponte. Fotografe. Saiba.", plansT: "Coma rumo à sua meta", galT: "Sua coleção salva", frT: "Seu círculo foodie", comT: "Encontre sua turma da comida", setT: "Conta e preferências", search: "Buscar", cancel: "Cancelar", save: "Salvar", del: "Excluir", send: "Enviar", postBtn: "Publicar", join: "Entrar", joined: "Membro", follow: "Seguir", following: "Seguindo", addCart: "Adicionar tudo ao carrinho", translate: "Ver tradução", original: "Ver original", captions: "Legendas", cook: "Modo cozinha", cooked: "Eu cozinhei" },
+  it: { feedT: "Cosa sta cucinando il mondo", feedS: "Foto, video e Grub Cuts da foodie di ovunque.", discT: "Trova il tuo prossimo piatto", shopT: "Spesa consegnata a modo tuo", scanT: "Inquadra. Scatta. Scopri.", plansT: "Mangia verso il tuo obiettivo", galT: "La tua collezione salvata", frT: "La tua cerchia food", comT: "Trova la tua gente del cibo", setT: "Account e preferenze", search: "Cerca", cancel: "Annulla", save: "Salva", del: "Elimina", send: "Invia", postBtn: "Pubblica", join: "Unisciti", joined: "Iscritto", follow: "Segui", following: "Segui già", addCart: "Aggiungi tutto al carrello", translate: "Vedi traduzione", original: "Vedi originale", captions: "Sottotitoli", cook: "Modalità cucina", cooked: "L'ho cucinato" },
+  zh: { feedT: "看看世界都在做什么菜", feedS: "来自各地美食家的照片、视频和 Grub Cuts。", discT: "发现你的下一道菜", shopT: "食材配送，随你安排", scanT: "对准，拍照，即刻了解", plansT: "朝着目标吃", galT: "你的收藏", frT: "你的美食圈", comT: "找到你的美食伙伴", setT: "账号与偏好", search: "搜索", cancel: "取消", save: "保存", del: "删除", send: "发送", postBtn: "发布", join: "加入", joined: "已加入", follow: "关注", following: "已关注", addCart: "全部加入购物车", translate: "查看翻译", original: "查看原文", captions: "字幕", cook: "烹饪模式", cooked: "我做了这道菜" },
+  ja: { feedT: "世界のキッチンから", feedS: "世界中のフーディーの写真・動画・Grub Cuts。", discT: "次の一皿を見つけよう", shopT: "食材をあなた流にお届け", scanT: "向けて、撮って、わかる", plansT: "目標に合わせて食べる", galT: "保存したコレクション", frT: "あなたのフードサークル", comT: "食の仲間を見つけよう", setT: "アカウントと設定", search: "検索", cancel: "キャンセル", save: "保存", del: "削除", send: "送信", postBtn: "投稿", join: "参加", joined: "参加中", follow: "フォロー", following: "フォロー中", addCart: "全部カートに追加", translate: "翻訳を見る", original: "原文を見る", captions: "字幕", cook: "調理モード", cooked: "作りました", },
+  ko: { feedT: "전 세계의 요리 이야기", feedS: "전 세계 푸디들의 사진, 영상, Grub Cuts.", discT: "다음 요리를 찾아보세요", shopT: "장보기, 원하는 방식으로 배송", scanT: "찍으면 바로 알 수 있어요", plansT: "목표에 맞게 먹기", galT: "저장한 컬렉션", frT: "나의 푸드 서클", comT: "음식 친구들을 찾아보세요", setT: "계정 및 환경설정", search: "검색", cancel: "취소", save: "저장", del: "삭제", send: "보내기", postBtn: "게시", join: "가입", joined: "가입됨", follow: "팔로우", following: "팔로잉", addCart: "전부 장바구니에 담기", translate: "번역 보기", original: "원문 보기", captions: "자막", cook: "요리 모드", cooked: "만들었어요" },
+  hi: { feedT: "दुनिया क्या पका रही है", feedS: "दुनिया भर के फ़ूडीज़ की तस्वीरें, वीडियो और Grub Cuts।", discT: "अपनी अगली डिश खोजें", shopT: "किराना, आपके तरीक़े से डिलीवर", scanT: "दिखाओ। खींचो। जानो।", plansT: "अपने लक्ष्य के हिसाब से खाएँ", galT: "आपका सहेजा संग्रह", frT: "आपका फ़ूड सर्कल", comT: "अपने फ़ूड साथी खोजें", setT: "खाता और प्राथमिकताएँ", search: "खोजें", cancel: "रद्द करें", save: "सहेजें", del: "हटाएँ", send: "भेजें", postBtn: "पोस्ट करें", join: "जुड़ें", joined: "जुड़ चुके", follow: "फ़ॉलो करें", following: "फ़ॉलो कर रहे", addCart: "सब कार्ट में डालें", translate: "अनुवाद देखें", original: "मूल देखें", captions: "कैप्शन", cook: "कुकिंग मोड", cooked: "मैंने बनाया" },
+  bn: { feedT: "বিশ্ব এখন কী রাঁধছে", feedS: "সারা বিশ্বের ফুডিদের ছবি, ভিডিও ও Grub Cuts।", discT: "আপনার পরের পদ খুঁজুন", shopT: "মুদি বাজার, আপনার মতো করে ডেলিভারি", scanT: "তাক করুন। ছবি তুলুন। জানুন।", plansT: "লক্ষ্য ধরে খান", galT: "আপনার সংরক্ষিত সংগ্রহ", frT: "আপনার ফুড সার্কেল", comT: "আপনার খাবারের মানুষ খুঁজুন", setT: "অ্যাকাউন্ট ও পছন্দ", search: "খুঁজুন", cancel: "বাতিল", save: "সংরক্ষণ", del: "মুছুন", send: "পাঠান", postBtn: "পোস্ট", join: "যোগ দিন", joined: "যুক্ত", follow: "ফলো করুন", following: "ফলো করছেন", addCart: "সব কার্টে দিন", translate: "অনুবাদ দেখুন", original: "মূল দেখুন", captions: "ক্যাপশন", cook: "রান্নার মোড", cooked: "আমি রেঁধেছি" },
+  ar: { feedT: "ماذا يطبخ العالم الآن", feedS: "صور وفيديوهات وGrub Cuts من عشّاق الطعام حول العالم.", discT: "اكتشف طبقك التالي", shopT: "بقالتك تصلك على طريقتك", scanT: "صوّب. صوّر. اعرف.", plansT: "كُل نحو هدفك", galT: "مجموعتك المحفوظة", frT: "دائرتك الغذائية", comT: "اعثر على أهل الطعام", setT: "الحساب والتفضيلات", search: "بحث", cancel: "إلغاء", save: "حفظ", del: "حذف", send: "إرسال", postBtn: "نشر", join: "انضم", joined: "منضم", follow: "متابعة", following: "تتابع", addCart: "أضف الكل إلى السلة", translate: "عرض الترجمة", original: "عرض الأصل", captions: "ترجمة الفيديو", cook: "وضع الطبخ", cooked: "طبختها" },
+  ru: { feedT: "Что готовит мир", feedS: "Фото, видео и Grub Cuts от фуди со всего мира.", discT: "Найдите своё следующее блюдо", shopT: "Продукты с доставкой по-вашему", scanT: "Наведи. Сними. Узнай.", plansT: "Ешьте по своей цели", galT: "Ваша коллекция", frT: "Ваш круг фуди", comT: "Найдите своих по еде", setT: "Аккаунт и настройки", search: "Поиск", cancel: "Отмена", save: "Сохранить", del: "Удалить", send: "Отправить", postBtn: "Опубликовать", join: "Вступить", joined: "Вы участник", follow: "Подписаться", following: "Вы подписаны", addCart: "Всё в корзину", translate: "Показать перевод", original: "Показать оригинал", captions: "Субтитры", cook: "Режим готовки", cooked: "Я приготовил(а)" },
+  tr: { feedT: "Dünya ne pişiriyor", feedS: "Dünyanın dört yanından foodie fotoğrafları, videoları ve Grub Cuts.", discT: "Sıradaki tabağını bul", shopT: "Market alışverişi, senin usulünle", scanT: "Tut. Çek. Öğren.", plansT: "Hedefine göre ye", galT: "Kaydedilen koleksiyonun", frT: "Yemek çevren", comT: "Yemek insanlarını bul", setT: "Hesap ve tercihler", search: "Ara", cancel: "İptal", save: "Kaydet", del: "Sil", send: "Gönder", postBtn: "Paylaş", join: "Katıl", joined: "Katıldın", follow: "Takip et", following: "Takiptesin", addCart: "Hepsini sepete ekle", translate: "Çeviriyi gör", original: "Orijinali gör", captions: "Altyazı", cook: "Pişirme modu", cooked: "Ben pişirdim" },
+  vi: { feedT: "Thế giới đang nấu gì", feedS: "Ảnh, video và Grub Cuts từ hội mê ẩm thực khắp nơi.", discT: "Tìm món tiếp theo của bạn", shopT: "Đi chợ, giao theo cách của bạn", scanT: "Giơ máy. Chụp. Biết ngay.", plansT: "Ăn theo mục tiêu", galT: "Bộ sưu tập đã lưu", frT: "Hội bạn ăn uống", comT: "Tìm hội mê ẩm thực của bạn", setT: "Tài khoản & tuỳ chọn", search: "Tìm kiếm", cancel: "Huỷ", save: "Lưu", del: "Xoá", send: "Gửi", postBtn: "Đăng", join: "Tham gia", joined: "Đã tham gia", follow: "Theo dõi", following: "Đang theo dõi", addCart: "Thêm tất cả vào giỏ", translate: "Xem bản dịch", original: "Xem bản gốc", captions: "Phụ đề", cook: "Chế độ nấu", cooked: "Tôi đã nấu" },
+  id: { feedT: "Apa yang sedang dimasak dunia", feedS: "Foto, video, dan Grub Cuts dari foodie di mana-mana.", discT: "Temukan piring berikutnya", shopT: "Belanjaan, diantar sesuai maumu", scanT: "Arahkan. Jepret. Tahu.", plansT: "Makan sesuai targetmu", galT: "Koleksi tersimpanmu", frT: "Lingkaran kulinermu", comT: "Temukan teman kulinermu", setT: "Akun & preferensi", search: "Cari", cancel: "Batal", save: "Simpan", del: "Hapus", send: "Kirim", postBtn: "Posting", join: "Gabung", joined: "Tergabung", follow: "Ikuti", following: "Mengikuti", addCart: "Tambahkan semua ke keranjang", translate: "Lihat terjemahan", original: "Lihat asli", captions: "Takarir", cook: "Mode masak", cooked: "Sudah kumasak" },
+};
+const tr2 = (lang, key) => (STRINGS2[lang] || STRINGS2.en)[key] || STRINGS2.en[key] || key;
 const tr = (lang, key) => (STRINGS[lang] || STRINGS.en)[key] || STRINGS.en[key] || key;
 
 function Disclosure({ icon, summary, children, defaultOpen = false }) {
@@ -2448,6 +2683,25 @@ function Disclosure({ icon, summary, children, defaultOpen = false }) {
         <span className="chev">▾</span>
       </button>
       {open && <div style={{ padding: "0 16px 14px", borderTop: "1px solid var(--line)" }}><div style={{ paddingTop: 12 }}>{children}</div></div>}
+    </div>
+  );
+}
+
+function LanguageGate({ lang, setLang, onDone }) {
+  return (
+    <div className="ovl">
+      <div className="modal" style={{ padding: 26, textAlign: "center" }}>
+        <div style={{ fontSize: 34, marginBottom: 8 }}>🌐</div>
+        <h2 style={{ fontSize: 17, marginBottom: 4 }}>Choose your language</h2>
+        <p className="sub" style={{ fontSize: 12, marginBottom: 16 }}>Elige tu idioma · Choisissez votre langue · 选择语言 · اختر لغتك · अपनी भाषा चुनें</p>
+        <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr", marginBottom: 18, maxHeight: 300, overflowY: "auto" }}>
+          {LANGS.map((l) => (
+            <button key={l.id} className={"chip" + (lang === l.id ? " on" : "")} style={{ padding: "11px 12px", fontSize: 13.5 }} onClick={() => setLang(l.id)}>{l.name}</button>
+          ))}
+        </div>
+        <button className="btn btn-grad" style={{ width: "100%" }} onClick={onDone}>Continue → {LANGS.find((l) => l.id === lang).name}</button>
+        <p className="sub" style={{ fontSize: 10.5, marginTop: 10 }}>Change anytime in Settings. Community posts get one-tap translation.</p>
+      </div>
     </div>
   );
 }
@@ -2512,14 +2766,259 @@ function loadMediaFile(file, cb) {
 
 const fmtDur = (s) => Math.floor(s / 60) + ":" + String(Math.round(s % 60)).padStart(2, "0");
 
+let MY_PHOTO = null; // synced from App each render so any component can show the user's avatar
+function downscalePhoto(file, cb) { // → small square dataURL that persists in storage; cb(dataUrl, errMsg)
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    try {
+      const S = 256, c = document.createElement("canvas");
+      c.width = S; c.height = S;
+      const x = c.getContext("2d");
+      const side = Math.min(img.width, img.height);
+      x.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, S, S);
+      cb(c.toDataURL("image/jpeg", 0.82), null);
+    } catch (e) { cb(null, "Couldn't process that image — try a JPG or PNG."); }
+    URL.revokeObjectURL(url);
+  };
+  img.onerror = () => { // format the browser can't decode (e.g. HEIC in some browsers)
+    URL.revokeObjectURL(url);
+    const r = new FileReader();
+    r.onload = () => {
+      if (file.size <= 1500000) cb(String(r.result), null);
+      else cb(null, "Your browser can't process that photo format — try a JPG or PNG (screenshots work great).");
+    };
+    r.onerror = () => cb(null, "Couldn't read that file — try a different photo.");
+    r.readAsDataURL(file);
+  };
+  img.src = url;
+}
+function Avatar({ photo, emoji, size = 36, fs = 17 }) {
+  return photo
+    ? <img src={photo} alt="" style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
+    : <div style={{ width: size, height: size, borderRadius: "50%", background: "var(--grad)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: fs, flexShrink: 0 }}>{emoji}</div>;
+}
+
 function MediaViewer({ media, onClose }) {
+  const vidRef = useRef(null);
+  const [muted, setMuted] = useState(false);
+  const [cc, setCc] = useState(true);
+  const [ccTrans, setCcTrans] = useState(null);
+  const [ccShowTrans, setCcShowTrans] = useState(false);
+  const [ccBusy, setCcBusy] = useState(false);
+  async function translateCc() {
+    if (ccShowTrans) { setCcShowTrans(false); return; }
+    if (ccTrans) { setCcShowTrans(true); return; }
+    setCcBusy(true);
+    try { const t = await aiTranslate(media.captions, CURRENT_LANG); if (t) { setCcTrans(t); setCcShowTrans(true); } } catch (e) {}
+    setCcBusy(false);
+  }
+  useEffect(() => {
+    if (media.type === "image" && media.music && !muted) playMusic(media.music);
+    else stopMusic();
+    return () => stopMusic();
+  }, [media, muted]);
+  useEffect(() => {
+    const v = vidRef.current;
+    if (!v || media.type !== "video") return;
+    const start = media.trimStart || 0, end = media.trimEnd || 0;
+    const onMeta = () => { if (start > 0) v.currentTime = start; };
+    const onTime = () => { if (end > 0 && v.currentTime >= end) { v.currentTime = start; } };
+    v.addEventListener("loadedmetadata", onMeta); v.addEventListener("timeupdate", onTime);
+    return () => { v.removeEventListener("loadedmetadata", onMeta); v.removeEventListener("timeupdate", onTime); };
+  }, [media]);
   return (
     <div className="ovl" style={{ background: "rgba(3,3,6,.94)", padding: 12 }} onClick={onClose}>
       <div style={{ position: "relative", width: "100%", maxWidth: 1100, display: "flex", flexDirection: "column", alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
         <button className="chip" style={{ position: "absolute", top: -6, right: 0, zIndex: 2, background: "rgba(16,16,26,.9)" }} onClick={onClose}>✕ Close</button>
         {media.type === "video"
-          ? <video src={media.url} controls autoPlay playsInline style={{ width: "100%", maxHeight: "86vh", borderRadius: 16, background: "#000" }} />
-          : <img src={media.url} alt="Post media" style={{ maxWidth: "100%", maxHeight: "86vh", borderRadius: 16, objectFit: "contain" }} />}
+          ? <video ref={vidRef} src={media.url} controls autoPlay playsInline style={{ width: "100%", maxHeight: "86vh", borderRadius: 16, background: "#000" }} />
+          : <img src={media.url} alt={media.alt || "Post media"} style={{ maxWidth: "100%", maxHeight: "86vh", borderRadius: 16, objectFit: "contain" }} />}
+        {media.type === "image" && media.music && (
+          <button className="chip" style={{ marginTop: 12 }} onClick={() => setMuted(!muted)}>{muted ? "🔇 Music off" : "🎵 " + trackName(media.music) + " — tap to mute"}</button>
+        )}
+        {media.type === "video" && media.captions && cc && (
+          <div style={{ position: "absolute", bottom: 74, left: "50%", transform: "translateX(-50%)", maxWidth: "88%", background: "rgba(5,5,10,.78)", backdropFilter: "blur(4px)", borderRadius: 10, padding: "8px 14px", fontSize: "clamp(13px, 2.4vw, 17px)", lineHeight: 1.45, textAlign: "center" }}>
+            {ccShowTrans && ccTrans ? ccTrans : media.captions}
+          </div>
+        )}
+        {media.type === "video" && media.captions && (
+          <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap", justifyContent: "center" }}>
+            <button className={"chip" + (cc ? " on" : "")} onClick={() => setCc(!cc)}>💬 {T("captions")} {cc ? "ON" : "OFF"}</button>
+            {CURRENT_LANG !== "en" && <button className={"chip" + (ccShowTrans ? " on" : "")} onClick={translateCc}>{ccBusy ? "…" : "🌐 " + (ccShowTrans ? T("original") : T("translate"))}</button>}
+          </div>
+        )}
+        {media.type === "video" && (media.trimStart || media.trimEnd) ? <span className="pill-sm tag-dark" style={{ marginTop: 10 }}>✂️ Trimmed clip</span> : null}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- MUSIC (WebAudio loops — no files needed) ---------------- */
+
+const MUSIC_TRACKS = [
+  { id: "lofi", name: "Lo-fi Chill", emoji: "🎧", bpm: 72, wave: "sine", notes: [220, 262, 330, 262, 196, 262, 330, 392] },
+  { id: "jazz", name: "Kitchen Jazz", emoji: "🎷", bpm: 96, wave: "triangle", notes: [262, 311, 392, 466, 392, 311, 349, 415] },
+  { id: "pop", name: "Summer Pop", emoji: "🌞", bpm: 118, wave: "square", notes: [392, 440, 494, 587, 494, 440, 392, 330] },
+  { id: "hype", name: "Hype Beat", emoji: "🔥", bpm: 140, wave: "sawtooth", notes: [147, 147, 175, 147, 196, 147, 220, 175] },
+  { id: "acoustic", name: "Acoustic Morning", emoji: "🌿", bpm: 84, wave: "triangle", notes: [330, 392, 440, 523, 440, 392, 330, 294] },
+];
+let _audio = { ctx: null, timer: null, playing: null };
+function playMusic(trackId) {
+  stopMusic();
+  const t = MUSIC_TRACKS.find((x) => x.id === trackId);
+  if (!t) return;
+  try {
+    _audio.ctx = _audio.ctx || new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _audio.ctx;
+    if (ctx.state === "suspended") ctx.resume();
+    let i = 0;
+    const beat = 60 / t.bpm;
+    const tick = () => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = t.wave; o.frequency.value = t.notes[i % t.notes.length];
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + beat * 0.9);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(); o.stop(ctx.currentTime + beat);
+      i++;
+    };
+    tick();
+    _audio.timer = setInterval(tick, beat * 1000);
+    _audio.playing = trackId;
+  } catch (e) {}
+}
+function stopMusic() {
+  if (_audio.timer) clearInterval(_audio.timer);
+  _audio.timer = null; _audio.playing = null;
+}
+const trackName = (id) => { const t = MUSIC_TRACKS.find((x) => x.id === id); return t ? t.emoji + " " + t.name : ""; };
+
+/* ---------------- POST EDITOR ---------------- */
+
+function PostEditor({ p, onSave, onDelete, onBoost, onClose }) {
+  const [caption, setCaption] = useState(p.caption);
+  const [alt, setAlt] = useState(p.alt || "");
+  const [music, setMusic] = useState(p.media && p.media.music || "");
+  const [media, setMedia] = useState(p.media || null);
+  const [mediaErr, setMediaErr] = useState("");
+  const [trim, setTrim] = useState({ start: (p.media && p.media.trimStart) || 0, end: (p.media && p.media.trimEnd) || 0 });
+  const [pinned, setPinned] = useState(!!p.pinned);
+  const [commentsOff, setCommentsOff] = useState(!!p.commentsOff);
+  const [hideLikes, setHideLikes] = useState(!!p.hideLikes);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [boostOpen, setBoostOpen] = useState(false);
+  const [archived, setArchived] = useState(!!p.archived);
+  const fileRef = useRef(null);
+  const isVideo = media && media.type === "video";
+  const dur = isVideo && media.duration ? media.duration : 0;
+
+  function pickReplacement(e) {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    setMediaErr("");
+    loadMediaFile(f, (m) => {
+      if (m.type === "video" && m.duration && m.duration > MAX_VIDEO_SECONDS) {
+        setMediaErr(`That video is ${fmtDur(m.duration)} — max is 5:00.`);
+        URL.revokeObjectURL(m.url);
+      } else { setMedia(m); setTrim({ start: 0, end: 0 }); if (m.type === "video") setMusic(""); }
+    });
+    e.target.value = "";
+  }
+  function save() {
+    const newMedia = media ? { ...media, captions: media.captions || undefined, music: media.type === "image" ? (music || undefined) : undefined, trimStart: isVideo && trim.start > 0 ? trim.start : undefined, trimEnd: isVideo && trim.end > 0 ? trim.end : undefined } : null;
+    onSave({ caption: caption.trim(), alt: alt.trim() || undefined, media: newMedia, pinned, commentsOff, hideLikes, archived, edited: true });
+    onClose();
+  }
+
+  return (
+    <div className="ovl" onClick={onClose}>
+      <div className="modal" style={{ padding: 20 }} onClick={(e) => e.stopPropagation()}>
+        <h2 style={{ fontSize: 16, marginBottom: 14 }}>✏️ Edit post</h2>
+
+        <div className="eyebrow" style={{ marginBottom: 6 }}>Caption</div>
+        <textarea className="inp" rows="2" style={{ resize: "vertical", marginBottom: 12 }} value={caption} onChange={(e) => setCaption(e.target.value)} />
+
+        {media && (
+          <>
+            <div className="eyebrow" style={{ marginBottom: 6 }}>Media</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+              {media.type === "video"
+                ? <video src={media.url} muted playsInline style={{ height: 70, borderRadius: 10, background: "#000" }} />
+                : <img src={media.url} alt="" style={{ height: 70, borderRadius: 10, objectFit: "cover" }} />}
+              <input ref={fileRef} type="file" accept="image/*,video/*" onChange={pickReplacement} style={{ display: "none" }} />
+              <button className="chip" onClick={() => fileRef.current.click()}>🔁 Replace</button>
+              <button className="chip" onClick={() => { setMedia(null); setMusic(""); }}>✕ Remove media</button>
+            </div>
+            {mediaErr && <p style={{ color: "#FF7A9C", fontSize: 12, marginBottom: 10 }}>{mediaErr}</p>}
+
+            {media.type === "image" && (
+              <>
+                <div className="eyebrow" style={{ marginBottom: 6 }}>🎵 Music over this photo</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                  <button className={"chip" + (!music ? " on" : "")} onClick={() => { setMusic(""); stopMusic(); }}>None</button>
+                  {MUSIC_TRACKS.map((t) => (
+                    <button key={t.id} className={"chip" + (music === t.id ? " on" : "")} onClick={() => { setMusic(t.id); playMusic(t.id); }}>{t.emoji} {t.name}</button>
+                  ))}
+                </div>
+                {music && <p className="sub" style={{ fontSize: 11, marginBottom: 12 }}>Previewing — it plays whenever someone views the photo. Tap None to silence.</p>}
+              </>
+            )}
+
+            {isVideo && (
+              <>
+                <div className="eyebrow" style={{ marginBottom: 6 }}>💬 Captions</div>
+                <input className="inp" style={{ marginBottom: 12, padding: "8px 12px" }} placeholder="Type what's said — viewers can read & translate along" value={media.captions || ""} onChange={(e) => setMedia((m) => ({ ...m, captions: e.target.value }))} />
+              </>
+            )}
+            {isVideo && dur > 0 && (
+              <>
+                <div className="eyebrow" style={{ marginBottom: 6 }}>✂️ Trim video</div>
+                <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 4, fontSize: 12 }}>
+                  <label style={{ flex: 1 }}>Start: <b>{fmtDur(trim.start)}</b>
+                    <input type="range" min="0" max={Math.max(0, dur - 1)} step="1" value={trim.start} onChange={(e) => setTrim((t) => ({ ...t, start: Math.min(+e.target.value, (t.end || dur) - 1) }))} style={{ width: "100%" }} />
+                  </label>
+                  <label style={{ flex: 1 }}>End: <b>{fmtDur(trim.end || dur)}</b>
+                    <input type="range" min="1" max={dur} step="1" value={trim.end || dur} onChange={(e) => setTrim((t) => ({ ...t, end: Math.max(+e.target.value, t.start + 1) }))} style={{ width: "100%" }} />
+                  </label>
+                </div>
+                <p className="sub" style={{ fontSize: 11, marginBottom: 12 }}>Viewers see just your selected section ({fmtDur((trim.end || dur) - trim.start)}).</p>
+              </>
+            )}
+          </>
+        )}
+
+        <div className="eyebrow" style={{ marginBottom: 6 }}>Accessibility</div>
+        <input className="inp" style={{ marginBottom: 12 }} placeholder="Alt text — describe the photo/video for screen readers" value={alt} onChange={(e) => setAlt(e.target.value)} />
+
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
+          <button className={"chip" + (pinned ? " on" : "")} onClick={() => setPinned(!pinned)}>📌 {pinned ? "Pinned to top" : "Pin to top"}</button>
+          <button className={"chip" + (commentsOff ? " on" : "")} onClick={() => setCommentsOff(!commentsOff)}>💬 {commentsOff ? "Comments off" : "Turn off comments"}</button>
+          <button className={"chip" + (hideLikes ? " on" : "")} onClick={() => setHideLikes(!hideLikes)}>🙈 {hideLikes ? "Like count hidden" : "Hide like count"}</button>
+          <button className={"chip" + (archived ? " on" : "")} onClick={() => setArchived(!archived)}>🗄️ {archived ? "Archived" : "Archive"}</button>
+        </div>
+
+        {!boostOpen ? (
+          <button className="chip" style={{ marginBottom: 14, borderColor: "#F5C542", color: "#F5C542" }} onClick={() => setBoostOpen(true)}>🚀 Boost this post…</button>
+        ) : (
+          <div style={{ padding: "12px 14px", background: "var(--panel2)", borderRadius: 12, marginBottom: 14 }}>
+            <div className="eyebrow" style={{ marginBottom: 6 }}>🚀 Boost for more engagement</div>
+            <p className="sub" style={{ fontSize: 11.5, marginBottom: 10 }}>Put your post in front of more foodies. Pick a budget (demo — no real charge):</p>
+            <div style={{ display: "flex", gap: 6 }}>
+              {[5, 10, 25].map((b) => <button key={b} className="chip" onClick={() => { onBoost(b); onClose(); }}>${b} · ~{b * 120} reach</button>)}
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <button className="btn btn-grad" onClick={save}>Save changes</button>
+          <button className="btn btn-ghost" onClick={() => { stopMusic(); onClose(); }}>Cancel</button>
+          <span style={{ flex: 1 }} />
+          {!confirmDel
+            ? <button className="chip" style={{ borderColor: "#FF7A9C", color: "#FF7A9C" }} onClick={() => setConfirmDel(true)}>🗑 Delete</button>
+            : <><span style={{ fontSize: 11.5, color: "#FF7A9C" }}>Sure?</span><button className="chip" style={{ borderColor: "#FF7A9C", color: "#FF7A9C" }} onClick={() => { onDelete(); onClose(); }}>Yes, delete</button></>}
+        </div>
       </div>
     </div>
   );
@@ -2530,6 +3029,23 @@ const GRAD_POOL = [["#1FA9F4", "#7E22CE"], ["#7E22CE", "#1FA9F4"], ["#0C6FB8", "
 function CreateRecipe({ onSave, onClose }) {
   const [f, setF] = useState({ name: "", emoji: "🍽️", cat: "main", replica: "", level: "Beginner", time: 30, serves: 4, desc: "", tags: [], photo: null });
   const photoRef = useRef(null);
+  const [photoErr, setPhotoErr] = useState("");
+  const [rawPhoto, setRawPhoto] = useState(null); // original upload, for manual cropping
+  const [cropOpen, setCropOpen] = useState(false);
+  const [crop, setCrop] = useState({ z: 1, x: 50, y: 50 });
+  const [cropBig, setCropBig] = useState(false);
+  function applyCrop(c) {
+    const img = new Image();
+    img.onload = () => {
+      const S = 256, cv = document.createElement("canvas");
+      cv.width = S; cv.height = S;
+      const side = Math.min(img.width, img.height) / c.z;
+      const sx = (img.width - side) * c.x / 100, sy = (img.height - side) * c.y / 100;
+      cv.getContext("2d").drawImage(img, sx, sy, side, side, 0, 0, S, S);
+      setPf((x) => ({ ...x, photo: cv.toDataURL("image/jpeg", 0.82) }));
+    };
+    img.src = rawPhoto;
+  }
   const [ings, setIngs] = useState([{ n: "", qty: "", price: "" }]);
   const [steps, setSteps] = useState([""]);
   const [macros, setMacros] = useState({ cal: "", protein: "", carbs: "", fat: "", fiber: "", sodium: "" });
@@ -2765,7 +3281,7 @@ function NotifPanel({ notifs, onClose, markRead }) {
   );
 }
 
-function ReportModal({ target, onClose, onReport, onBlock }) {
+function ReportModal({ target, onClose, onReport, onBlock, onMute }) {
   const REASONS = ["Spam", "Harassment", "Dangerous content", "Misinformation", "Something else"];
   const [reason, setReason] = useState(null);
   return (
@@ -2778,6 +3294,7 @@ function ReportModal({ target, onClose, onReport, onBlock }) {
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button className="btn btn-grad" disabled={!reason} onClick={() => { onReport(reason); onClose(); }}>Submit report</button>
+          <button className="btn btn-ghost" onClick={() => { onMute(target.user); onClose(); }}>🔕 Mute @{target.user}</button>
           <button className="btn btn-ghost" style={{ borderColor: "#FF7A9C", color: "#FF7A9C" }} onClick={() => { onBlock(target.user); onClose(); }}>🚫 Block @{target.user}</button>
           <button className="chip" onClick={onClose}>Cancel</button>
         </div>
@@ -2811,6 +3328,25 @@ const COMM_MSGS = {
 };
 
 const REACT_SET = ["🔥", "❤️", "😂", "👏"];
+
+function CommMsgText({ text }) {
+  const [trans, setTrans] = useState(null);
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  async function go() {
+    if (show) { setShow(false); return; }
+    if (trans) { setShow(true); return; }
+    setBusy(true);
+    try { const t = await aiTranslate(text, CURRENT_LANG); if (t) { setTrans(t); setShow(true); } } catch (e) {}
+    setBusy(false);
+  }
+  return (
+    <div>
+      <p style={{ fontSize: 13.5, lineHeight: 1.55, marginTop: 4 }}>{show && trans ? trans : text}</p>
+      {CURRENT_LANG !== "en" && <button style={{ fontSize: 11, color: "var(--royal-soft)", marginTop: 2 }} onClick={go}>{busy ? "…" : "🌐 " + (show ? T("original") : T("translate"))}</button>}
+    </div>
+  );
+}
 
 function CommunitiesScreen({ joined, setJoined, myComms, setMyComms, commPosts, setCommPosts, reacts, setReacts, showToast, plus, goPlus }) {
   const [open, setOpen] = useState(null);
@@ -2885,7 +3421,7 @@ function CommunitiesScreen({ joined, setJoined, myComms, setMyComms, commPosts, 
               <div>
                 <b style={{ fontSize: 12.5, color: "var(--royal-soft)" }}>@{isMine && m.id.startsWith("u") ? "you" : comm.creator}{isMine && m.id.startsWith("u") && plus && <span title="GrubPlus member" style={{ color: "#F5C542", marginLeft: 2 }}>✦</span>}</b>
                 <span style={{ fontSize: 10.5, color: "var(--dim)" }}> · {m.time}</span>
-                <p style={{ fontSize: 13.5, lineHeight: 1.55, marginTop: 4 }}>{m.t}</p>
+                <CommMsgText text={m.t} />
               </div>
             </div>
             <div style={{ display: "flex", gap: 6 }}>
@@ -2906,7 +3442,7 @@ function CommunitiesScreen({ joined, setJoined, myComms, setMyComms, commPosts, 
       <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 220 }}>
           <div className="eyebrow">Communities</div>
-          <h1 className="h-page">Find your food people</h1>
+          <h1 className="h-page">{T("comT")}</h1>
           <p className="sub" style={{ marginBottom: 16 }}>Creator-run channels for the content you love — join in, react, and never miss a drop.</p>
         </div>
         <button className="btn btn-grad" onClick={() => setCreating(true)}>＋ Create community</button>
@@ -2977,20 +3513,130 @@ const TERMS_TEXT = `1. The basics — GrubGrounds is a platform for sharing reci
 
 This is a demo document for the GrubGrounds prototype — a production launch requires terms reviewed by a lawyer.`;
 
-function SettingsTab({ lang, setLang, planTypeName, plus, subPaused, setSubPaused, cancelSub, contactSupport, deleteAccount, showToast, blocked, unblock }) {
+function SettingsTab({ lang, setLang, planTypeName, plus, subPaused, setSubPaused, cancelSub, contactSupport, deleteAccount, showToast, blocked, unblock, muted, setMuted, notifPrefs, setNotifPrefs, audience, setAudience, favorites, setFavorites, friends, posts, restorePost, startPlus, planType, setPlanType, theme, applyTheme, aiEnabled, setAiEnabled, showTutorial }) {
   const [showTerms, setShowTerms] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [revStars, setRevStars] = useState(0);
   const [revText, setRevText] = useState("");
   const [revSent, setRevSent] = useState(false);
+  const [query, setQuery] = useState("");
+  const isPreset = THEMES.some((t) => t.id === theme.id);
+  const q = query.trim().toLowerCase();
+  const show = (kw) => !q || kw.includes(q) || q.split(" ").every((w) => kw.includes(w));
+  const myPosts = posts.filter((p) => p.user === "you" && !p.archived);
+  const archived = posts.filter((p) => p.user === "you" && p.archived);
 
   return (
     <div style={{ maxWidth: 560, margin: "0 auto" }}>
       <div className="eyebrow">Settings</div>
-      <h1 className="h-page">Account & support</h1>
-      <p className="sub" style={{ marginBottom: 18 }}>Subscription, help, legal, and account controls.</p>
+      <h1 className="h-page">{T("setT")}</h1>
+      <p className="sub" style={{ marginBottom: 14 }}>Everything about your account, privacy, and app experience.</p>
 
+      <input className="inp" style={{ marginBottom: 16, padding: "12px 14px" }} placeholder={'🔍 Search settings… (try "theme", "privacy", "delete")'} value={query} onChange={(e) => setQuery(e.target.value)} />
+      {q && <p className="sub" style={{ fontSize: 11.5, marginBottom: 12 }}>Showing settings matching "{query}" — clear the search to see everything.</p>}
+
+      {show("grubplus subscription membership plan trial upgrade perks") && (<div>
+      <div className="card" style={{ padding: 20, marginBottom: 14, background: "linear-gradient(120deg, rgba(31,169,244,.1), rgba(104,18,181,.16))", borderColor: plus ? "#7DE3A0" : "var(--royal)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+          <b className="disp" style={{ fontSize: 17 }}>Grub<span style={{ background: "var(--grad)", WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>Plus</span></b>
+          {plus
+            ? <span className="pill-sm" style={{ background: "rgba(125,227,160,.15)", color: "#7DE3A0" }}>✓ Trial active · {planType === "annual" ? "$59.99/yr" : "$7.99/mo"}</span>
+            : <span className="pill-sm tag-dark">7-day free trial</span>}
+        </div>
+        {!plus && (
+          <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr", marginBottom: 12 }}>
+            <button className="card" style={{ padding: "12px 14px", textAlign: "left", borderColor: planType === "monthly" ? "var(--royal)" : "var(--line)" }} onClick={() => setPlanType("monthly")}>
+              <b style={{ fontSize: 13.5, display: "block" }}>Monthly</b>
+              <span style={{ fontSize: 12, color: "var(--muted)" }}>$7.99 / month</span>
+            </button>
+            <button className="card" style={{ padding: "12px 14px", textAlign: "left", borderColor: planType === "annual" ? "var(--royal)" : "var(--line)", position: "relative" }} onClick={() => setPlanType("annual")}>
+              <span className="pill-sm" style={{ position: "absolute", top: -8, right: 8, background: "rgba(125,227,160,.9)", color: "#08320F" }}>Save 37%</span>
+              <b style={{ fontSize: 13.5, display: "block" }}>Annual</b>
+              <span style={{ fontSize: 12, color: "var(--muted)" }}>$59.99 / year <s style={{ color: "var(--dim)" }}>$95.88</s></span>
+            </button>
+          </div>
+        )}
+        <p className="sub" style={{ marginBottom: 12 }}>The feed, recipes, and shopping are free forever. GrubPlus unlocks the power tools — and usually pays for itself in grocery savings.</p>
+        <div style={{ display: "grid", gap: 6, gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", marginBottom: 14 }}>
+          {["✨ AI assistant + cooking mode", "📷 Food scanner (all 3 modes)", "🎯 Custom dietary plan builder", "💸 Advanced budget + savings alerts", "🚚 Rotating delivery deals & discounts", "⚡ Early access to creator drops (24h head start)", "✦ Plus member badge on your posts"].map((f) => (
+            <div key={f} style={{ fontSize: 12.5, color: "var(--muted)" }}>{f}</div>
+          ))}
+        </div>
+        {!plus && <button className="btn btn-grad" onClick={startPlus}>Start 7-day free trial · then {planType === "annual" ? "$59.99/yr" : "$7.99/mo"}</button>}
+        {plus && (
+          <div>
+            <div className="eyebrow" style={{ marginBottom: 6 }}>🚚 Your current delivery deals</div>
+            {activePlusDeals().map((d) => <div key={d.id} style={{ fontSize: 12.5, color: "#7DE3A0", padding: "2px 0" }}>✓ {d.label}</div>)}
+            <p className="sub" style={{ fontSize: 12, marginTop: 8 }}>Fresh deals rotate in every two weeks and apply automatically at checkout. Thanks for being a GrubPlus member 💙💜</p>
+          </div>
+        )}
+      </div>
+      </div>)}
+
+      {show("theme color appearance custom") && (<div>
+      <div className="card" style={{ padding: 18, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
+          <div style={{ fontSize: 24 }}>🎨</div>
+          <div>
+            <b style={{ fontSize: 14 }}>Themes</b>
+            <p className="sub" style={{ fontSize: 12 }}>Recolor the whole app. Blue is the default — or build your own.</p>
+          </div>
+        </div>
+        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fill,minmax(104px,1fr))", marginBottom: 16 }}>
+          {THEMES.map((t) => {
+            const on = theme.id === t.id;
+            return (
+              <button key={t.id} onClick={() => applyTheme(t)}
+                style={{ padding: 10, borderRadius: 14, border: "1px solid " + (on ? t.a : "var(--line)"), background: on ? "var(--panel2)" : "var(--panel)", textAlign: "center" }}>
+                <div style={{ width: 40, height: 40, borderRadius: "50%", margin: "0 auto 8px", background: `linear-gradient(120deg, ${t.a}, ${t.b})`, boxShadow: on ? `0 0 0 3px var(--ink), 0 0 0 5px ${t.a}` : "none" }} />
+                <div style={{ fontSize: 11, color: on ? "var(--white)" : "var(--muted)", fontWeight: 600 }}>{t.name}{t.id === "saiyan" ? " · default" : ""}</div>
+              </button>
+            );
+          })}
+        </div>
+        <div className="eyebrow" style={{ marginBottom: 8 }}>Custom colors</div>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
+            Primary
+            <input type="color" value={theme.a} onChange={(e) => applyTheme({ id: "custom", name: "Custom", a: e.target.value, b: theme.b })}
+              style={{ width: 42, height: 32, border: "none", borderRadius: 8, background: "none", cursor: "pointer", padding: 0 }} aria-label="Primary theme color" />
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
+            Secondary
+            <input type="color" value={theme.b} onChange={(e) => applyTheme({ id: "custom", name: "Custom", a: theme.a, b: e.target.value })}
+              style={{ width: 42, height: 32, border: "none", borderRadius: 8, background: "none", cursor: "pointer", padding: 0 }} aria-label="Secondary theme color" />
+          </label>
+          <div style={{ flex: 1, minWidth: 120, height: 32, borderRadius: 10, background: `linear-gradient(120deg, ${theme.a}, ${theme.b})` }} title="Live preview" />
+          {!isPreset && <button className="chip" onClick={() => applyTheme(THEMES[0])}>Reset to default</button>}
+        </div>
+        <p className="sub" style={{ fontSize: 11.5, marginTop: 10 }}>Your theme colors flow through buttons, gradients, badges, and highlights everywhere. Black backgrounds and white text stay put for readability.</p>
+      </div>
+      </div>)}
+
+      {show("ai assistant intelligence toggle") && (<div>
+      <div className="card" style={{ padding: 18, marginBottom: 14, display: "flex", alignItems: "center", gap: 14 }}>
+        <div style={{ fontSize: 24 }}>✨</div>
+        <div style={{ flex: 1 }}>
+          <b style={{ fontSize: 14 }}>AI assistant</b>
+          <p className="sub" style={{ fontSize: 12 }}>Helps you navigate, pick recipes, shop, and cook. Fully optional — the app works without it.</p>
+        </div>
+        <button className={"chip" + (aiEnabled ? " on" : "")} onClick={() => setAiEnabled(!aiEnabled)} role="switch" aria-checked={aiEnabled}>{aiEnabled ? "On" : "Off"}</button>
+      </div>
+      </div>)}
+
+      {show("tutorial walkthrough help replay") && (<div>
+      <div className="card" style={{ padding: 18, display: "flex", alignItems: "center", gap: 14 }}>
+        <div style={{ fontSize: 24 }}>📘</div>
+        <div style={{ flex: 1 }}>
+          <b style={{ fontSize: 14 }}>Tutorial</b>
+          <p className="sub" style={{ fontSize: 12 }}>You saw this once when you first joined — replay the walkthrough anytime.</p>
+        </div>
+        <button className="chip" onClick={showTutorial}>Replay</button>
+      </div>
+      </div>)}
+
+      {show("language idioma translate") && (<div>
       {/* language */}
       <div className="card" style={{ padding: 18, marginBottom: 14, display: "flex", alignItems: "center", gap: 14 }}>
         <div style={{ fontSize: 24 }}>🌐</div>
@@ -3002,7 +3648,9 @@ function SettingsTab({ lang, setLang, planTypeName, plus, subPaused, setSubPause
           {LANGS.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
       </div>
+      </div>)}
 
+      {show("subscription billing pause cancel resume plan") && (<div>
       {/* subscription management */}
       <div className="card" style={{ padding: 18, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 10 }}>
@@ -3029,7 +3677,110 @@ function SettingsTab({ lang, setLang, planTypeName, plus, subPaused, setSubPause
           </div>
         )}
       </div>
+      </div>)}
 
+      {show("notifications alerts push likes comments") && (<div className="card" style={{ padding: 18, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 10 }}>
+          <div style={{ fontSize: 24 }}>🔔</div>
+          <div><b style={{ fontSize: 14 }}>Notification settings</b><p className="sub" style={{ fontSize: 12 }}>Choose what's worth a ping.</p></div>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[["likes", "❤️ Likes"], ["comments", "💬 Comments"], ["follows", "👥 New followers"], ["orders", "📦 Orders"], ["streaks", "🔥 Streak reminders"], ["drops", "📢 Community drops"]].map(([k, label]) => (
+            <button key={k} className={"chip" + (notifPrefs[k] !== false ? " on" : "")} onClick={() => setNotifPrefs((n) => ({ ...n, [k]: n[k] === false }))}>{label}</button>
+          ))}
+        </div>
+      </div>)}
+
+      {show("privacy audience who can see visibility private") && (<div className="card" style={{ padding: 18, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 10 }}>
+          <div style={{ fontSize: 24 }}>👁️</div>
+          <div><b style={{ fontSize: 14 }}>Who can see your posts</b><p className="sub" style={{ fontSize: 12 }}>Applies to new posts you share.</p></div>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[["everyone", "🌍 Everyone"], ["followers", "👥 Followers only"], ["friends", "🤝 Friends only"]].map(([k, label]) => (
+            <button key={k} className={"chip" + (audience === k ? " on" : "")} onClick={() => setAudience(k)}>{label}</button>
+          ))}
+        </div>
+        {audience !== "everyone" && <p className="sub" style={{ fontSize: 11.5, marginTop: 8 }}>New posts are limited to {audience === "followers" ? "people who follow you" : "your mutual friends"}. Blocked users never see your posts either way.</p>}
+      </div>)}
+
+      {show("favorites favorite profiles algorithm feed priority star") && (<div className="card" style={{ padding: 18, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 10 }}>
+          <div style={{ fontSize: 24 }}>⭐</div>
+          <div><b style={{ fontSize: 14 }}>Favorite profiles</b><p className="sub" style={{ fontSize: 12 }}>Your algorithm boost — favorites' posts rise to the top of your feed.</p></div>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {friends.map((f) => (
+            <button key={f.id} className={"chip" + (favorites.includes(f.handle) ? " on" : "")} onClick={() => setFavorites((fv) => fv.includes(f.handle) ? fv.filter((x) => x !== f.handle) : [...fv, f.handle])}>{favorites.includes(f.handle) ? "⭐" : "☆"} {f.name.split(" ")[0]}</button>
+          ))}
+        </div>
+      </div>)}
+
+      {show("muted mute silence hidden") && (<div className="card" style={{ padding: 18, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: muted.length ? 10 : 0 }}>
+          <div style={{ fontSize: 24 }}>🔕</div>
+          <div><b style={{ fontSize: 14 }}>Muted users</b><p className="sub" style={{ fontSize: 12 }}>{muted.length ? "Their posts are hidden — they don't know, and you can still message." : "Nobody muted. Use the ⋯ menu on any post to quietly mute someone."}</p></div>
+        </div>
+        {muted.map((h) => (
+          <div key={h} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0" }}>
+            <span style={{ flex: 1, fontSize: 13 }}>@{h}</span>
+            <button className="chip" onClick={() => setMuted((m) => m.filter((x) => x !== h))}>Unmute</button>
+          </div>
+        ))}
+      </div>)}
+
+      {show("post activity history my posts") && (<div className="card" style={{ padding: 18, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 10 }}>
+          <div style={{ fontSize: 24 }}>📈</div>
+          <div><b style={{ fontSize: 14 }}>Post activity</b><p className="sub" style={{ fontSize: 12 }}>Everything you've shared, newest first.</p></div>
+        </div>
+        {myPosts.length === 0 && <p className="sub" style={{ fontSize: 12 }}>No posts yet.</p>}
+        {myPosts.slice(0, 6).map((p) => (
+          <div key={p.id} style={{ padding: "7px 0", borderBottom: "1px solid var(--line)", fontSize: 12.5 }}>
+            <span style={{ color: "var(--muted)" }}>{(p.caption || "(media post)").slice(0, 52)}{(p.caption || "").length > 52 ? "…" : ""}</span>
+            <div style={{ fontSize: 10.5, color: "var(--dim)", marginTop: 2 }}>♥ {p.likes} · 💬 {p.comments.length} · {p.time} ago{p.boosted && " · 🚀 boosted"}{p.pinned && " · 📌 pinned"}</div>
+          </div>
+        ))}
+      </div>)}
+
+      {show("insights analytics reach performance stats engagement") && (<div className="card" style={{ padding: 18, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
+          <div style={{ fontSize: 24 }}>📊</div>
+          <div><b style={{ fontSize: 14 }}>Post insights</b><p className="sub" style={{ fontSize: 12 }}>How your content is landing.</p></div>
+        </div>
+        {(() => {
+          const likes = myPosts.reduce((s, p) => s + p.likes, 0);
+          const cmts = myPosts.reduce((s, p) => s + p.comments.length, 0);
+          const reach = likes * 7 + myPosts.length * 40 + myPosts.filter((p) => p.boosted).reduce((s, p) => s + (p.boostBudget || 0) * 120, 0);
+          const best = myPosts.slice().sort((a, b) => b.likes - a.likes)[0];
+          return (
+            <div>
+              <div style={{ display: "flex", gap: 22, flexWrap: "wrap", marginBottom: 10 }}>
+                <div className="stat"><b>{myPosts.length}</b><span>posts</span></div>
+                <div className="stat"><b>{likes.toLocaleString()}</b><span>likes</span></div>
+                <div className="stat"><b>{cmts}</b><span>comments</span></div>
+                <div className="stat"><b>~{reach.toLocaleString()}</b><span>est. reach</span></div>
+              </div>
+              {best && <p className="sub" style={{ fontSize: 12 }}>🏆 Top post: "{(best.caption || "(media post)").slice(0, 44)}…" with {best.likes} likes</p>}
+            </div>
+          );
+        })()}
+      </div>)}
+
+      {show("archive archived hidden posts restore") && (<div className="card" style={{ padding: 18, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: archived.length ? 10 : 0 }}>
+          <div style={{ fontSize: 24 }}>🗄️</div>
+          <div><b style={{ fontSize: 14 }}>Archive</b><p className="sub" style={{ fontSize: 12 }}>{archived.length ? "Hidden from your feed and profile — restore anytime." : "Archive posts from their ✏️ edit menu to tuck them away without deleting."}</p></div>
+        </div>
+        {archived.map((p) => (
+          <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid var(--line)" }}>
+            <span style={{ flex: 1, fontSize: 12.5, color: "var(--muted)" }}>{(p.caption || "(media post)").slice(0, 46)}…</span>
+            <button className="chip" onClick={() => restorePost(p.id)}>↩ Restore</button>
+          </div>
+        ))}
+      </div>)}
+
+      {show("support help customer service contact email chat") && (<div>
       {/* customer service */}
       <div className="card" style={{ padding: 18, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 10 }}>
@@ -3044,7 +3795,9 @@ function SettingsTab({ lang, setLang, planTypeName, plus, subPaused, setSubPause
           <a className="btn btn-ghost" style={{ textDecoration: "none", display: "inline-block" }} href="mailto:support@grubgrounds.app?subject=GrubGrounds%20support">✉️ Email us</a>
         </div>
       </div>
+      </div>)}
 
+      {show("review rating feedback stars") && (<div>
       {/* leave a review */}
       <div className="card" style={{ padding: 18, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 10 }}>
@@ -3068,7 +3821,9 @@ function SettingsTab({ lang, setLang, planTypeName, plus, subPaused, setSubPause
           </>
         )}
       </div>
+      </div>)}
 
+      {show("terms conditions legal rules") && (<div>
       {/* terms */}
       <div className="card" style={{ padding: 18, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -3081,7 +3836,9 @@ function SettingsTab({ lang, setLang, planTypeName, plus, subPaused, setSubPause
         </div>
         {showTerms && <p style={{ fontSize: 12.5, color: "var(--muted)", lineHeight: 1.65, whiteSpace: "pre-wrap", marginTop: 12, borderTop: "1px solid var(--line)", paddingTop: 12 }}>{TERMS_TEXT}</p>}
       </div>
+      </div>)}
 
+      {show("blocked block users") && (<div>
       {/* blocked users */}
       <div className="card" style={{ padding: 18, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: blocked.length ? 10 : 0 }}>
@@ -3098,7 +3855,9 @@ function SettingsTab({ lang, setLang, planTypeName, plus, subPaused, setSubPause
           </div>
         ))}
       </div>
+      </div>)}
 
+      {show("delete account erase data remove danger") && (<div>
       {/* danger zone */}
       <div className="card" style={{ padding: 18, borderColor: "rgba(255,122,156,.4)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 10 }}>
@@ -3116,6 +3875,8 @@ function SettingsTab({ lang, setLang, planTypeName, plus, subPaused, setSubPause
               <button className="chip" onClick={() => setConfirmDelete(false)}>Never mind</button>
             </div>}
       </div>
+      </div>)}
+
     </div>
   );
 }
@@ -3177,14 +3938,28 @@ export default function GrubGrounds() {
   const [subPaused, setSubPaused] = usePersistedState("gg_plus_paused", false);
   const [planType, setPlanType] = usePersistedState("gg_plus_plan", "monthly");
   const [lang, setLang] = usePersistedState("gg_lang", "en");
+  const [langChosen, setLangChosen] = usePersistedState("gg_lang_chosen", false);
   const [joinedComms, setJoinedComms] = usePersistedState("gg_comms_joined", []);
   const [myComms, setMyComms] = usePersistedState("gg_comms_mine", []);
   const [commPosts, setCommPosts] = usePersistedState("gg_comms_posts", {});
   const [commReacts, setCommReacts] = usePersistedState("gg_comms_reacts", {});
   const [dms, setDms] = usePersistedState("gg_dms", {});
+  const [userProfile, setUserProfile] = usePersistedState("gg_profile", { name: "You", handle: "you", bio: "", emoji: "😋" });
+  const [muted, setMuted] = usePersistedState("gg_muted", []);
+  const [notifPrefs, setNotifPrefs] = usePersistedState("gg_notif_prefs", {});
+  const [audience, setAudience] = usePersistedState("gg_audience", "everyone");
+  const [favorites, setFavorites] = usePersistedState("gg_favorites", []);
+  const [clippedCoupons, setClippedCoupons] = usePersistedState("gg_coupons", []);
+  const [usedCoupons, setUsedCoupons] = usePersistedState("gg_coupons_used", []);
+  function clipCoupon(id) {
+    setClippedCoupons((c) => (c.includes(id) ? c : [...c, id]));
+    setToast("🎟️ Coupon clipped — it's in your wallet at checkout");
+  }
   const [onboarded, setOnboarded] = usePersistedState("gg_onboarded", false);
   const [userRecipes, setUserRecipes] = usePersistedState("gg_user_recipes", []);
   USER_RECIPES = userRecipes; // sync module view before children render
+  CURRENT_LANG = lang; // module-level so every component can call T() without prop threading
+  MY_PHOTO = userProfile.photo || null;
   const [follows, setFollows] = usePersistedState("gg_follows", []);
   const [blocked, setBlocked] = usePersistedState("gg_blocked", []);
   const [cookedLog, setCookedLog] = usePersistedState("gg_cooked_log", []);
@@ -3246,11 +4021,15 @@ export default function GrubGrounds() {
     setPlus(false); setSubPaused(false); persist.del("gg_plus");
     setToast("GrubPlus canceled — you're on the free plan. Come back anytime 💙");
   }
+  function startPlus() {
+    setPlus(true); persist.set("gg_plus", "1");
+    setToast("Welcome to GrubPlus ✨ 7-day free trial started");
+  }
   function contactSupport() {
     if (aiEnabled) { setAiSeed("Act as GrubGrounds customer support. I need help with an issue — ask me what's going on."); setAiOpen(true); }
   }
   function deleteAccount() {
-    ["gg_pantry","gg_planner","gg_orders","gg_cooked_dates","gg_cooked_recipes","gg_ratings","gg_challenges","gg_plus","gg_plus_paused","gg_theme","gg_tutorial_seen","gg_user","gg_cred","gg_session","gg_user_recipes","gg_follows","gg_blocked","gg_cooked_log","gg_notifs","gg_saved","gg_comms_joined","gg_comms_mine","gg_comms_posts","gg_comms_reacts","gg_dms"].forEach((k) => persist.del(k));
+    ["gg_pantry","gg_planner","gg_orders","gg_cooked_dates","gg_cooked_recipes","gg_ratings","gg_challenges","gg_plus","gg_plus_paused","gg_theme","gg_tutorial_seen","gg_user","gg_cred","gg_session","gg_user_recipes","gg_follows","gg_blocked","gg_cooked_log","gg_notifs","gg_saved","gg_comms_joined","gg_comms_mine","gg_comms_posts","gg_comms_reacts","gg_dms","gg_profile","gg_muted","gg_notif_prefs","gg_audience","gg_favorites","gg_lang_chosen","gg_coupons","gg_coupons_used"].forEach((k) => persist.del(k));
     setUserRecipes([]); setFollows([]); setBlocked([]); setCookedLog([]); setNotifs([]);
     setPantry([]); setPlanner({}); setOrders([]); setCookedDates([]); setCookedRecipes([]); setMyRatings({}); setJoinedChallenges([]);
     setPlus(false); setSubPaused(false); setTheme(THEMES[0]); setSaved([]); setCart([]); setAllergies([]); setFilters([]);
@@ -3291,6 +4070,15 @@ export default function GrubGrounds() {
   function placeOrder(order) {
     setOrders((o) => [order, ...o].slice(0, 20));
     setCart([]);
+    if (order.couponId) setUsedCoupons((u) => [...u, order.couponId]);
+    if (storeAllowsCoupons(order.storeId)) {
+      const fresh = STORE_COUPONS.filter((c) => c.store === order.storeId && !clippedCoupons.includes(c.id) && !usedCoupons.includes(c.id) && c.id !== order.couponId);
+      if (fresh.length) {
+        const earned = fresh[Date.now() % fresh.length];
+        setClippedCoupons((cc) => [...cc, earned.id]);
+        addNotif("🎟️", `You earned a coupon at ${order.store}: ${earned.label} (code ${earned.code})`);
+      }
+    }
     setToast(`✅ Order placed with ${order.store} — arriving in ${order.eta}`);
     addNotif("📦", `Order confirmed at ${order.store} — $${order.total.toFixed(2)}, arriving in ${order.eta}`);
   }
@@ -3342,16 +4130,16 @@ export default function GrubGrounds() {
 
   const body = recipe
     ? <RecipeDetail key={recipe.id} r={recipe} back={() => setRecipe(null)} addAllToCart={addAllToCart} pantry={pantry} follows={follows} toggleFollow={toggleFollow} startCooking={() => setCooking(true)} onCooked={() => markCooked(recipe)} myRating={myRatings[recipe.id]} rate={(s, w) => rateRecipe(recipe.id, s, w)} saved={saved.some((s) => s.id === recipe.id)} onSave={toggleSave} aiEnabled={aiEnabled} startCookMode={startCookMode} allergies={allergies} setAllergies={setAllergies} onShareRecipe={() => setShare({ type: "recipe", label: recipe.emoji + " " + recipe.name })} onTip={() => setToast(`Sent a tip to @${recipe.author} ☕ Creators keep 85%`)} />
-    : screen === "feed" ? <FeedScreen posts={posts.filter((p) => !blocked.includes(p.user))} setPosts={setPosts} openRecipe={openRecipe} friends={friends} streak={streak} joinedChallenges={joinedChallenges} onJoin={joinChallenge} follows={follows} toggleFollow={toggleFollow} onReport={setReporting} lang={lang} plusUser={effectivePlus} planner={planner} savedForAlerts={saved.map((s) => allRecipes().find((r) => r.id === s.id)).filter(Boolean)} schedulePost={schedulePost} scheduled={scheduled} cancelScheduled={(i) => setScheduled((sc) => sc.filter((_, j) => j !== i))} openMedia={setMediaView} onShare={(p) => setShare({ type: "post", label: "@" + p.user + ": " + p.caption.slice(0, 60) })} />
+    : screen === "feed" ? <FeedScreen posts={posts.filter((p) => !blocked.includes(p.user) && !muted.includes(p.user) && !p.archived)} favorites={favorites} setPosts={setPosts} openRecipe={openRecipe} friends={friends} streak={streak} joinedChallenges={joinedChallenges} onJoin={joinChallenge} follows={follows} toggleFollow={toggleFollow} onReport={setReporting} lang={lang} plusUser={effectivePlus} planner={planner} savedForAlerts={saved.map((s) => allRecipes().find((r) => r.id === s.id)).filter(Boolean)} schedulePost={schedulePost} scheduled={scheduled} cancelScheduled={(i) => setScheduled((sc) => sc.filter((_, j) => j !== i))} openMedia={setMediaView} onShare={(p) => setShare({ type: "post", label: "@" + p.user + ": " + p.caption.slice(0, 60) })} />
     : screen === "discover" ? <DiscoverScreen openRecipe={openRecipe} saved={saved} onSave={toggleSave} filters={filters} setFilters={setFilters} viewed={viewed} onCreate={() => setCreating(true)} />
-    : screen === "shop" ? <ShoppingScreen cart={cart} setCart={setCart} store={store} setStore={setStore} budget={budget} setBudget={setBudget} savedRecipes={saved.map((s) => allRecipes().find((r) => r.id === s.id)).filter(Boolean)} orders={orders} placeOrder={placeOrder} reorder={reorder} friends={friends} plus={effectivePlus} goPlus={() => setScreen("settings")} />
+    : screen === "shop" ? <ShoppingScreen cart={cart} setCart={setCart} store={store} setStore={setStore} budget={budget} setBudget={setBudget} savedRecipes={saved.map((s) => allRecipes().find((r) => r.id === s.id)).filter(Boolean)} orders={orders} placeOrder={placeOrder} reorder={reorder} friends={friends} plus={effectivePlus} goPlus={() => setScreen("settings")} clipped={clippedCoupons} usedCoupons={usedCoupons} clipCoupon={clipCoupon} aiEnabled={aiEnabled} />
     : screen === "scan" ? <ScannerScreen aiEnabled={aiEnabled} pantry={pantry} setPantry={setPantry} />
     : screen === "plans" ? <PlansScreen openRecipe={openRecipe} saved={saved} onSave={toggleSave} planner={planner} setPlanner={setPlanner} addWeekToCart={addWeekToCart} cookedLog={cookedLog} />
     : screen === "gallery" ? <GalleryScreen saved={saved} setSaved={setSaved} openRecipe={openRecipe} goDiscover={() => setScreen("discover")} />
     : screen === "friends" ? <FriendsScreen friends={friends} setFriends={setFriends} dms={dms} setDms={setDms} />
-    : screen === "communities" ? <CommunitiesScreen joined={joinedComms} setJoined={setJoinedComms} myComms={myComms} setMyComms={setMyComms} commPosts={commPosts} setCommPosts={setCommPosts} reacts={commReacts} setReacts={setCommReacts} showToast={setToast} plus={effectivePlus} goPlus={() => setScreen("settings")} />
-    : screen === "sysset" ? <SettingsTab lang={lang} setLang={setLang} planTypeName={planType === "annual" ? "annual · $59.99/yr" : "monthly · $7.99/mo"} plus={plus} subPaused={subPaused} setSubPaused={setSubPaused} cancelSub={cancelSub} contactSupport={contactSupport} deleteAccount={deleteAccount} showToast={setToast} blocked={blocked} unblock={(h) => setBlocked((b) => b.filter((x) => x !== h))} />
-    : <ProfileScreen goSettings={() => setScreen("sysset")} aiEnabled={aiEnabled} setAiEnabled={(v) => { setAiEnabled(v); if (!v) setAiOpen(false); }} showTutorial={() => setTutorial(true)} allergies={allergies} setAllergies={setAllergies} theme={theme} applyTheme={applyTheme} badges={badges} streak={streak} planType={planType} setPlanType={setPlanType} plus={plus} startPlus={() => { setPlus(true); persist.set("gg_plus", "1"); setToast("Welcome to GrubPlus ✨ 7-day free trial started"); }} />;
+    : screen === "communities" ? <CommunitiesScreen joined={joinedComms} setJoined={setJoinedComms} myComms={myComms} setMyComms={setMyComms} commPosts={commPosts} setCommPosts={setCommPosts} reacts={commReacts} setReacts={setCommReacts} showToast={setToast} plus={effectivePlus} goPlus={() => setScreen("settings")} clipped={clippedCoupons} usedCoupons={usedCoupons} clipCoupon={clipCoupon} aiEnabled={aiEnabled} />
+    : screen === "sysset" ? <SettingsTab lang={lang} setLang={setLang} planTypeName={planType === "annual" ? "annual · $59.99/yr" : "monthly · $7.99/mo"} plus={plus} subPaused={subPaused} setSubPaused={setSubPaused} cancelSub={cancelSub} contactSupport={contactSupport} deleteAccount={deleteAccount} showToast={setToast} blocked={blocked} unblock={(h) => setBlocked((b) => b.filter((x) => x !== h))} muted={muted} setMuted={setMuted} notifPrefs={notifPrefs} setNotifPrefs={setNotifPrefs} audience={audience} setAudience={setAudience} favorites={favorites} setFavorites={setFavorites} friends={friends} posts={posts} restorePost={(id) => setPosts((ps) => ps.map((x) => (x.id === id ? { ...x, archived: false } : x)))} startPlus={startPlus} planType={planType} setPlanType={setPlanType} theme={theme} applyTheme={applyTheme} aiEnabled={aiEnabled} setAiEnabled={setAiEnabled} showTutorial={() => setTutorial(true)} />
+    : <ProfileScreen profile={userProfile} setProfile={setUserProfile} posts={posts} follows={follows} saved={saved} openRecipe={openRecipe} openMedia={setMediaView} badges={badges} streak={streak} allergies={allergies} setAllergies={setAllergies} goSettings={() => setScreen("sysset")} />;
 
   const [splash, setSplash] = useState(true);
   useEffect(() => { const t = setTimeout(() => setSplash(false), 2000); return () => clearTimeout(t); }, []);
@@ -3419,13 +4207,14 @@ export default function GrubGrounds() {
       {notifOpen && <NotifPanel notifs={notifs} onClose={() => setNotifOpen(false)} markRead={() => setNotifs((n) => n.map((x) => ({ ...x, read: true })))} />}
       {creating && <CreateRecipe onSave={publishRecipe} onClose={() => setCreating(false)} />}
       {cooking && recipe && <CookMode r={recipe} onClose={() => setCooking(false)} onDone={() => { setCooking(false); markCooked(recipe); }} />}
-      {reporting && <ReportModal target={reporting} onClose={() => setReporting(null)} onReport={(reason) => setToast(`Report submitted (${reason}) — our team will review it 🛟`)} onBlock={blockUser} />}
+      {reporting && <ReportModal target={reporting} onClose={() => setReporting(null)} onReport={(reason) => setToast(`Report submitted (${reason}) — our team will review it 🛟`)} onBlock={blockUser} onMute={(h) => { setMuted((m) => (m.includes(h) ? m : [...m, h])); setToast(`@${h} muted — quietly hidden from your feed. Unmute in Settings.`); }} />}
 
       {aiEnabled && !aiOpen && <button className="fab" onClick={() => setAiOpen(true)} aria-label="Open AI assistant">✨</button>}
       {aiEnabled && <Assistant ctx={ctx} open={aiOpen} setOpen={setAiOpen} seed={aiSeed} clearSeed={() => setAiSeed(null)} />}
 
-      {tutorial && <Tutorial onClose={closeTutorial} />}
-      {!tutorial && !onboarded && <QuickSetup setFilters={setFilters} setAllergies={setAllergies} onDone={(goal) => { setOnboarded(true); setToast(goal ? "You're set up — the app is tuned to you ✨" : "You're in — tune things anytime in Profile ✨"); }} />}
+      {!langChosen && <LanguageGate lang={lang} setLang={setLang} onDone={() => setLangChosen(true)} />}
+      {langChosen && tutorial && <Tutorial onClose={closeTutorial} />}
+      {langChosen && !tutorial && !onboarded && <QuickSetup setFilters={setFilters} setAllergies={setAllergies} onDone={(goal) => { setOnboarded(true); setToast(goal ? "You're set up — the app is tuned to you ✨" : "You're in — tune things anytime in Profile ✨"); }} />}
       {share && <ShareModal item={share} friends={friends} onClose={() => setShare(null)} />}
 
       {toast && (

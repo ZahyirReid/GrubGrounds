@@ -24,6 +24,13 @@ Instagram has the inspiration but no cart. Instacart has the cart but no inspira
 - Weekly challenges, cooking streaks, and 9 earnable achievement badges
 - Report & block moderation tools
 
+- **Direct messages** with a 3-message request cap for non-mutual follows
+- **Post editing suite**: edit captions, replace/trim video, music over photos (5 built-in tracks), pin, archive, boost, comments/likes toggles, alt text
+- Video **captions with one-tap AI translation**; posts & community messages translate into the viewer's language
+- **Digital coupons**: clip store offers, earn on orders, redeem by code or AI camera scan at checkout
+- Profile pictures (photos with manual crop + zoomable preview) and **animated GIF avatars**
+- First-open language picker; core UI translated into **16 languages**
+
 ### 🍳 Cooking
 - Recipe catalog with macros, difficulty, time, and diet tags on everything
 - **User recipe creation** — publish your own recipes with photos; they flow into every system
